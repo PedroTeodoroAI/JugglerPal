@@ -1,0 +1,21 @@
+<resources xmlns:tools="http://schemas.android.com/tools">
+    <!-- Base application theme. -->
+
+
+    <style name="Base.Theme.JugglerPal" parent="Theme.Material3.DayNight.NoActionBar">
+        <!-- Desenha atrás das system bars -->
+        <item name="android:windowDrawsSystemBarBackgrounds">true</item>
+        <!-- Cor da status bar -->
+        <item name="android:statusBarColor">@color/status_bar_gray</item>
+        <!-- (Opcional) Cor da barra de navegação, se quiser -->
+        <item name="android:navigationBarColor">@color/nav_bar_gray</item>
+        <item name="android:windowLightStatusBar">true</item>
+        <item name="android:windowLightNavigationBar">true</item>
+        <!-- COR DE FUNDO GLOBAL DA JANELA -->
+        <item name="android:windowBackground">@color/app_background</item>
+        <!-- COR DE FUNDO PARA VIEWS QUE HERDAM colorBackground -->
+        <item name="android:colorBackground">@color/app_background</item>
+    </style>
+
+    <style name="Theme.JugglerPal" parent="Base.Theme.JugglerPal" />
+</resources>

@@ -1,0 +1,44 @@
+# Android/IntelliJ
+*.iml
+.idea/
+    /caches/
+    /libraries/
+    /modules.xml
+    /workspace.xml
+    /navEditor.xml
+    /assetWizardSettings.xml
+.DS_Store
+
+# Gradle
+.gradle/
+build/
+**/build/
+!gradle/wrapper/gradle-wrapper.jar
+
+# Local config (sdk path, etc)
+local.properties
+
+# Captures from Android Studio
+captures/
+
+# External native build
+.externalNativeBuild/
+.cxx/
+
+# Generated APKs/AABs
+*.apk
+*.ap_
+*.aab
+
+# Keystore files (se não quiseres versionar chaves)
+*.jks
+*.keystore
+
+# ProGuard (se aplicável)
+proguard/
+
+# Logs
+*.log
+
+# Misc
+*.orig

@@ -1,0 +1,47 @@
+{
+  "project_info": {
+    "project_number": "337266817921",
+    "project_id": "jugglerpal",
+    "storage_bucket": "jugglerpal.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:337266817921:android:d8b923edf99e308c5fc680",
+        "android_client_info": {
+          "package_name": "com.example.jugglerpal"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "337266817921-f8pevbcnuk2lm6oa0orh0a1t788d5aie.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.example.jugglerpal",
+            "certificate_hash": "d835b321f04aa16ab1d02801317af26a84b84c63"
+          }
+        },
+        {
+          "client_id": "337266817921-fpcutaeoeevu65hbfnt9r1bfhcd5cfh9.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyBZOow8BHeHIYfo-Q87LgYhHX-krq6-vMc"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "337266817921-fpcutaeoeevu65hbfnt9r1bfhcd5cfh9.apps.googleusercontent.com",
+              "client_type": 3
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
