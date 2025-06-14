@@ -141,6 +141,21 @@ class MainActivity : ComponentActivity(), MessageClient.OnMessageReceivedListene
         //FirebaseAuth.getInstance().signInAnonymously()
         // (opcional) Autentica anónimamente para respeitar as rules
         FirebaseAuth.getInstance().signInAnonymously()
+            .addOnSuccessListener {
+                Log.d("Auth", "Autenticado anonimamente com UID: ${it.user?.uid}")
+
+                // Só aqui é seguro usar o Firestore
+                firestore = FirebaseFirestore.getInstance().apply {
+                    firestoreSettings = FirebaseFirestoreSettings.Builder()
+                        .setPersistenceEnabled(true)
+                        .build()
+                }
+
+                loadConnectedNodes() // ou qualquer outra operação Firebase
+            }
+            .addOnFailureListener { e ->
+                Log.e("Auth", "Falha ao autenticar anonimamente", e)
+            }
 
         loadConnectedNodes()
 
@@ -267,11 +282,11 @@ class MainActivity : ComponentActivity(), MessageClient.OnMessageReceivedListene
                 ).show()
             }
 
-            /*getSharedPreferences("app_prefs", Context.MODE_PRIVATE)
+            getSharedPreferences("app_prefs", Context.MODE_PRIVATE)
                 .edit()
                 .putString("history_json", message)
                 .apply()
-            loadHistory()*/
+            loadHistory()
         }
     }
 

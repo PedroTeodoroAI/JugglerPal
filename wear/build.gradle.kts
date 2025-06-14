@@ -64,11 +64,14 @@ dependencies {
     implementation("com.google.android.gms:play-services-auth:20.6.0")
     implementation("com.github.PhilJay:MPAndroidChart:3.1.0")
     implementation("org.apache.commons:commons-math3:3.6.1")
+    implementation("androidx.wear.watchface:watchface-complications-data:1.2.1")
+    implementation("androidx.wear.watchface:watchface-complications-data-source:1.2.1")
+
 
     androidTestImplementation(platform(libs.androidx.compose.bom))
     androidTestImplementation(libs.androidx.ui.test.junit4)
     debugImplementation(libs.androidx.ui.tooling)
     debugImplementation(libs.androidx.ui.test.manifest)
     debugImplementation(libs.androidx.tiles.tooling)
-    wearApp(project(":wear"))
+    //wearApp(project(":wear"))
 }

@@ -12,12 +12,20 @@ import android.os.Bundle
 import android.util.Log
 import android.view.WindowManager
 import android.widget.Toast
-
+import androidx.compose.ui.input.pointer.pointerInteropFilter
+import android.view.MotionEvent
+import android.view.ViewGroup
 // AndroidX – Core / Activity / Lifecycle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
 import androidx.lifecycle.lifecycleScope
+import kotlin.math.log10
+import kotlin.math.ln
+import android.view.GestureDetector
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
+
 
 // Jetpack Compose – Foundation
 import androidx.compose.foundation.ExperimentalFoundationApi
@@ -25,12 +33,14 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.material.TextField
 // Jetpack Compose – Material
 import androidx.compose.material.AlertDialog
@@ -48,6 +58,7 @@ import androidx.compose.material.Icon
 // Jetpack Compose – Runtime
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
+import com.github.mikephil.charting.charts.HorizontalBarChart
 
 // Jetpack Compose – UI
 import androidx.compose.ui.Alignment
@@ -107,7 +118,9 @@ import com.github.mikephil.charting.highlight.Highlight
 import com.github.mikephil.charting.utils.MPPointF
 import android.widget.TextView
 import com.github.mikephil.charting.components.IMarker
-
+import com.github.mikephil.charting.components.LimitLine
+import com.github.mikephil.charting.charts.CombinedChart
+import com.github.mikephil.charting.data.CombinedData
 // Coroutines
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -152,6 +165,8 @@ import android.os.Looper
 import android.os.HandlerThread
 
 import android.media.SoundPool
+import androidx.compose.ui.graphics.RectangleShape
+import androidx.compose.ui.text.font.Typeface
 import kotlinx.coroutines.*
 import androidx.lifecycle.LifecycleCoroutineScope
 import androidx.compose.ui.text.input.KeyboardType
@@ -162,6 +177,7 @@ import kotlin.math.roundToInt
 import kotlin.math.exp
 import kotlin.math.ln
 import kotlin.math.pow
+import kotlin.math.abs
 
 import kotlin.math.max
 import kotlin.math.min
@@ -296,8 +312,10 @@ class MainActivity : ComponentActivity(),
 
     private var swapZ by mutableStateOf(1)
     private var swapAudio by mutableStateOf(0) //0-mute, 1-vibrate, 2-high
-    private var swapCount by mutableStateOf(1) //0-time, 1-count
+    private var swapCount by mutableStateOf(0) //0-count, 1-time, 2-tps
     private var swapMetronome by mutableStateOf(0) //0-off, 1-on
+    private var swapDisplay by mutableStateOf(0) //0-list, 1-graph
+    private var swapGraph by mutableStateOf(0) //0-attempts, 1-histogram, 2-progress
 
     private var throwMultiplier by mutableStateOf(2)
 
@@ -394,8 +412,10 @@ class MainActivity : ComponentActivity(),
 
         swapZ = prefs.getInt("swapZ", 1)
         swapAudio = prefs.getInt("swapAudio", 0)
-        swapCount= prefs.getInt("swapCount", 1)
+        swapCount= prefs.getInt("swapCount", 0)
         swapMetronome= prefs.getInt("swapMetronome", 0)
+        swapDisplay= prefs.getInt("swapDisplay", 0)
+        swapGraph= prefs.getInt("swapGraph", 0)
 
         throwMultiplier = prefs.getInt("throwMultiplier", 2)  // <- lê o multiplier
 
@@ -772,6 +792,26 @@ class MainActivity : ComponentActivity(),
                             .putInt("swapMetronome", newswapMetronome)
                             .apply()
                     },
+                    swapDisplay = swapDisplay,
+                    onSwapDisplayChange = { newswapDisplay ->
+                        // Atualiza o estado
+                        swapDisplay = newswapDisplay
+                        // Persiste no prefs
+                        getSharedPreferences("app_prefs", MODE_PRIVATE)
+                            .edit()
+                            .putInt("swapDisplay", newswapDisplay)
+                            .apply()
+                    },
+                    swapGraph = swapGraph,
+                    onSwapGraphChange = { newswapGraph ->
+                        // Atualiza o estado
+                        swapGraph = newswapGraph
+                        // Persiste no prefs
+                        getSharedPreferences("app_prefs", MODE_PRIVATE)
+                            .edit()
+                            .putInt("swapGraph", newswapGraph)
+                            .apply()
+                    },
                     throwMultiplier = throwMultiplier,
                     onThrowMultiplierChange = { newTM ->
                         // Atualiza o estado
@@ -795,10 +835,14 @@ class MainActivity : ComponentActivity(),
                     onOpenAccountDialog   = { showAccountDialog = true },
                     onCloseAccountDialog  = { showAccountDialog = false },
                     showDiffsDialog     = showDiffsDialog,
+                    onOpenDiffsDialog  = { showDiffsDialog = true },
                     onCloseDiffsDialog  = { showDiffsDialog = false },
                     lastDiffs           = lastDiffs,
                     saveAll = saveAll,
-                    onSaveAllChange = { saveAll = it }
+                    onSaveAllChange = { saveAll = it },
+                    onOpenGroupedHistory = {
+                        scope.launch { pagerState.animateScrollToPage(1) }
+                    }
                 )
                 1 -> GroupedHistoryScreen (
                     { note ->
@@ -915,6 +959,10 @@ class MainActivity : ComponentActivity(),
         onSwapCountChange: (Int) -> Unit,
         swapMetronome: Int,
         onSwapMetronomeChange: (Int) -> Unit,
+        swapDisplay: Int,
+        onSwapDisplayChange: (Int) -> Unit,
+        swapGraph: Int,
+        onSwapGraphChange: (Int) -> Unit,
         throwMultiplier: Int,
         onThrowMultiplierChange: (Int) -> Unit,
         sensorSamples: List<SensorSample>,
@@ -930,12 +978,14 @@ class MainActivity : ComponentActivity(),
         onOpenAccountDialog: () -> Unit,
         onCloseAccountDialog: () -> Unit,
         showDiffsDialog: Boolean,
+        onOpenDiffsDialog: () -> Unit,
         onCloseDiffsDialog: () -> Unit,
         resetAccelerometer: () -> Unit,
         lastDiffs: List<Int>,
         saveAll: Boolean,
         onSaveAllChange: (Boolean) -> Unit,
-        isScreenBlocked: Boolean
+        isScreenBlocked: Boolean,
+        onOpenGroupedHistory: () -> Unit
     ) {
 
 
@@ -954,6 +1004,8 @@ class MainActivity : ComponentActivity(),
         val customKeys3 = listOf('a', 'b', 'c', 'd','e','f', 'g', 'h', 'i')
         val customKeys4 = listOf('j', 'k', 'l', 'm','n','o', 'p', 'q', 'r')
         val customKeys5 = listOf('s', 't', 'u', 'v','w','x', 'y', 'z', '!')
+
+        val selectedIndices = remember { mutableStateListOf<Int>() }
 
         /*val customKeys1a = listOf('1', '2', '3')
         val customKeys1b = listOf('(', ',', ')', '*','x')
@@ -1007,6 +1059,10 @@ class MainActivity : ComponentActivity(),
         swapCountValue=swapCount
 
         var swapMetronomeValue by rememberSaveable { mutableStateOf(swapMetronome) }
+        var swapDisplayValue by rememberSaveable { mutableStateOf(swapDisplay) }
+        var swapGraphValue by rememberSaveable { mutableStateOf(swapGraph) }
+
+
         var bpmValue by rememberSaveable { mutableStateOf(bpm) }
         var throwsIntervalValue by rememberSaveable { mutableStateOf(throwsInterval) }
         var timeIntervalValue by rememberSaveable { mutableStateOf(timeInterval) }
@@ -1017,95 +1073,147 @@ class MainActivity : ComponentActivity(),
                 .fillMaxSize()
                 .background(MaterialTheme.colors.background)
         ) {
-            TimeText(
+            /*TimeText(
                 modifier = Modifier.align(Alignment.TopCenter),
                 timeTextStyle = MaterialTheme.typography.body2.copy(
                     color = MaterialTheme.colors.primary,
                     fontSize = 12.sp
                 )
-            )
+            )*/
 
             Column(
                 modifier = Modifier
                     .align(Alignment.Center)
                     .fillMaxWidth()
-                    .fillMaxHeight(0.8f)
-                    .padding(top = 2.dp),
+                    .fillMaxHeight(),
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
-                Text(
+                /*Text(
                     text = "x$throwMultiplier",
                     color = MaterialTheme.colors.primaryVariant,
                     fontSize = 12.sp,
                     modifier = Modifier
-                        .clickable(enabled = !isScreenBlocked ) {
+                        .clickable(enabled = !isScreenBlocked) {
                             // calcula o próximo valor entre 1 e 4
                             val next = (throwMultiplier % 2) + 1
                             onThrowMultiplierChange(next)
                         }
                         .padding(start = 4.dp)  // espacinhos, se quiseres
-                )
+                )*/
                 //AccelerometerDisplay(reading = accelerometerReading)
-                val bgColor = when (isAccelReliable.coerceIn(0,3)) {
-                    1 -> Color.Yellow
+                val bgColor = when (isAccelReliable.coerceIn(0, 3)) {
+                    1 -> MaterialTheme.colors.primaryVariant
                     2 -> Color.Green
                     3 -> MaterialTheme.colors.primary
                     else -> Color.Red
                 }
 
-                Text(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clickable(enabled = !isScreenBlocked ) {
-                            minZ = 100f
-                            maxZ = -100f
-                        }
-                        .padding(bottom = 0.dp),
-                    textAlign = TextAlign.Center,
-                    color = bgColor,
-                    fontSize = 14.sp,
-                    text = accelerometerReading
-                )
                 Row(
                     modifier = Modifier
-                        .padding(horizontal = 0.dp, vertical = 0.dp),
+                        .fillMaxWidth()
+                        .weight(0.08f)
+                        .padding(horizontal = 65.dp, vertical = 0.dp)
+                        .clip(RoundedCornerShape(0.dp)) // aplica cantos arredondados
+                        .background(color = Color.Black),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable(enabled = !isScreenBlocked) {
+                                //onOpenDiffsDialog()
+                            }
+                            .padding(top = 6.dp),
+                        textAlign = TextAlign.Center,
+                        color = bgColor,
+                        fontSize = 13.sp,
+                        text = "Workout"//accelerometerReading
+                    )
+                }
+                /*Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .weight(0.01f)
+                        .padding(horizontal = 0.dp, vertical = 0.dp)
+                        .background(color = Color.Black),
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
 
-                    if(recordedRecords.isNotEmpty()) {
-                        Button(
-                            onClick = onDecrementLast,
-                            modifier = Modifier
-                                .size(20.dp)
-                                .weight(0.8f),
-                            shape = CircleShape,
-                            enabled = !isScreenBlocked,
-                            colors = ButtonDefaults.buttonColors(backgroundColor = Color.Transparent)
-                        ) {
-                            Text(text = "−", fontSize = 22.sp, color = MaterialTheme.colors.primary)
-                        }
-                    }else{
-                        Text(
-                            text="",
-                            Modifier
-                                .size(20.dp)
-                                .weight(0.8f),
-                        )
-                    }
+                }*/
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .weight(0.15f)
+                        .padding(horizontal = 34.dp, vertical = 0.dp)
+                        .clip(RoundedCornerShape(0.dp)) // aplica cantos arredondados
+                        .background(color = Color.Black),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+
                     Button(
                         onClick = {
-                            swapAudioValue = (swapAudioValue+1) % 3
-                            onSwapAudioChange(swapAudioValue)
+                            swapDisplayValue = (swapDisplayValue + 1) % 2
+                            onSwapDisplayChange(swapDisplayValue)
                         },
                         modifier = Modifier
                             .size(20.dp)
-                            .weight(0.8f),
+                            .weight(1f),
                         shape = CircleShape,
                         enabled = !isScreenBlocked,
                         colors = ButtonDefaults.buttonColors(backgroundColor = Color.Transparent)
                     ) {
-                        if(swapAudioValue==0){
+                        if (swapDisplayValue == 0) {
+                            Icon(
+                                painter = painterResource(id = R.drawable.edit_content),
+                                contentDescription = "Sliders Options",
+                                modifier = Modifier.size(20.dp),
+                                tint = MaterialTheme.colors.primary
+                            )
+                        }
+                        if (swapDisplayValue == 1) {
+                            if (swapGraphValue==0){
+                                Icon(
+                                    painter = painterResource(id = R.drawable.wos_attempts),
+                                    contentDescription = "Graph",
+                                    modifier = Modifier.size(20.dp),
+                                    tint = MaterialTheme.colors.primary
+                                )
+                            }
+                            if (swapGraphValue==1){
+                                Icon(
+                                    painter = painterResource(id = R.drawable.wos_histogram),
+                                    contentDescription = "Graph",
+                                    modifier = Modifier.size(20.dp),
+                                    tint = MaterialTheme.colors.primary
+                                )
+                            }
+                            if (swapGraphValue==2){
+                                Icon(
+                                    painter = painterResource(id = R.drawable.wos_progress),
+                                    contentDescription = "Graph",
+                                    modifier = Modifier.size(20.dp),
+                                    tint = MaterialTheme.colors.primary
+                                )
+                            }
+                        }
+
+                    }
+                    Button(
+                        onClick = {
+                            swapAudioValue = (swapAudioValue + 1) % 3
+                            onSwapAudioChange(swapAudioValue)
+                        },
+                        modifier = Modifier
+                            .size(20.dp)
+                            .weight(1f),
+                        shape = CircleShape,
+                        enabled = !isScreenBlocked,
+                        colors = ButtonDefaults.buttonColors(backgroundColor = Color.Transparent)
+                    ) {
+                        if (swapAudioValue == 0) {
                             Icon(
                                 painter = painterResource(id = R.drawable.audio_volume_muted),
                                 contentDescription = "Sliders Options",
@@ -1113,7 +1221,7 @@ class MainActivity : ComponentActivity(),
                                 tint = MaterialTheme.colors.primary
                             )
                         }
-                        if(swapAudioValue==1){
+                        if (swapAudioValue == 1) {
                             Icon(
                                 painter = painterResource(id = R.drawable.audio_volume_vibrate),
                                 contentDescription = "Sliders Options",
@@ -1121,7 +1229,7 @@ class MainActivity : ComponentActivity(),
                                 tint = MaterialTheme.colors.primary
                             )
                         }
-                        if(swapAudioValue==2){
+                        if (swapAudioValue == 2) {
                             Icon(
                                 painter = painterResource(id = R.drawable.audio_volume_high),
                                 contentDescription = "Sliders Options",
@@ -1132,17 +1240,17 @@ class MainActivity : ComponentActivity(),
                     }
                     Button(
                         onClick = {
-                            swapCountValue = (swapCountValue+1) % 3
+                            swapCountValue = (swapCountValue + 1) % 3
                             onSwapCountChange(swapCountValue)
                         },
                         modifier = Modifier
                             .size(20.dp)
-                            .weight(0.8f),
+                            .weight(1f),
                         shape = CircleShape,
                         enabled = !isScreenBlocked,
                         colors = ButtonDefaults.buttonColors(backgroundColor = Color.Transparent)
                     ) {
-                        if(swapCount==1){
+                        if (swapCount == 0) {
                             Icon(
                                 painter = painterResource(id = R.drawable.finger_counting),
                                 contentDescription = "Sliders Options",
@@ -1150,7 +1258,7 @@ class MainActivity : ComponentActivity(),
                                 tint = MaterialTheme.colors.primary
                             )
                         }
-                        if(swapCount==0){
+                        if (swapCount == 1) {
                             Icon(
                                 painter = painterResource(id = R.drawable.chronometer_v2),
                                 contentDescription = "Sliders Options",
@@ -1158,7 +1266,7 @@ class MainActivity : ComponentActivity(),
                                 tint = MaterialTheme.colors.primary
                             )
                         }
-                        if(swapCount==2){
+                        if (swapCount == 2) {
                             Icon(
                                 painter = painterResource(id = R.drawable.topspeed),
                                 contentDescription = "Sliders Options",
@@ -1168,19 +1276,21 @@ class MainActivity : ComponentActivity(),
                         }
                     }
 
-                    val throwsSteps = listOf(10,20,50,100,200,500,1000)
-                    val timeSteps = listOf(10,15,30,60,120,300,600)
-                    val tpsSteps = listOf(4.5f,4.6f,4.7f,4.8f,4.9f,5.0f,5.1f,5.2f,5.3f,5.4f,5.5f)
-                    if (swapCountValue==0) { //time
+                    val throwsSteps = listOf(10, 20, 50, 100, 200, 500, 1000)
+                    val timeSteps = listOf(10, 15, 30, 60, 120, 300, 600)
+                    val tpsSteps =
+                        listOf(4.5f, 4.6f, 4.7f, 4.8f, 4.9f, 5.0f, 5.1f, 5.2f, 5.3f, 5.4f, 5.5f)
+                    if (swapCountValue == 1) { //time
                         Button(
                             onClick = {
-                                val currentIndex = timeSteps.indexOf(timeIntervalValue).let { if (it < 0) 0 else it }
+                                val currentIndex = timeSteps.indexOf(timeIntervalValue)
+                                    .let { if (it < 0) 0 else it }
                                 timeIntervalValue = timeSteps[(currentIndex + 1) % timeSteps.size]
                                 onTimeIntervalChange(timeIntervalValue)
-                        },
+                            },
                             modifier = Modifier
-                                .size(24.dp)
-                                .weight(0.8f),
+                                .size(20.dp)
+                                .weight(1f),
                             shape = CircleShape,
                             enabled = !isScreenBlocked,
                             colors = ButtonDefaults.buttonColors(backgroundColor = Color.Transparent)
@@ -1188,23 +1298,25 @@ class MainActivity : ComponentActivity(),
                             Text(
                                 text = "$timeIntervalValue\nsec",
                                 color = MaterialTheme.colors.primary,
-                                fontSize = 10.sp,
-                                lineHeight = 10.sp,
+                                fontSize = 9.sp,
+                                lineHeight = 9.sp,
                                 textAlign = TextAlign.Center,
                                 modifier = Modifier.fillMaxWidth()         // centra o texto no botão
                             )
                         }
                     }
-                    if (swapCountValue==1) { //throws
+                    if (swapCountValue == 0) { //throws
                         Button(
                             onClick = {
-                                val currentIndex = throwsSteps.indexOf(throwsIntervalValue).let { if (it < 0) 0 else it }
-                                throwsIntervalValue = throwsSteps[(currentIndex + 1) % throwsSteps.size]
+                                val currentIndex = throwsSteps.indexOf(throwsIntervalValue)
+                                    .let { if (it < 0) 0 else it }
+                                throwsIntervalValue =
+                                    throwsSteps[(currentIndex + 1) % throwsSteps.size]
                                 onThrowsIntervalChange(throwsIntervalValue)
                             },
                             modifier = Modifier
-                                .size(24.dp)
-                                .weight(0.8f),
+                                .size(20.dp)
+                                .weight(1f),
                             shape = CircleShape,
                             enabled = !isScreenBlocked,
                             colors = ButtonDefaults.buttonColors(backgroundColor = Color.Transparent)
@@ -1212,23 +1324,24 @@ class MainActivity : ComponentActivity(),
                             Text(
                                 text = "$throwsIntervalValue\nthrows",
                                 color = MaterialTheme.colors.primary,
-                                fontSize = 10.sp,
-                                lineHeight = 10.sp,
+                                fontSize = 8.sp,
+                                lineHeight = 9.sp,
                                 textAlign = TextAlign.Center,
                                 modifier = Modifier.fillMaxWidth()         // centra o texto no botão
                             )
                         }
                     }
-                    if (swapCountValue==2) { //throws per second
+                    if (swapCountValue == 2) { //throws per second
                         Button(
                             onClick = {
-                                val currentIndex = tpsSteps.indexOf(tpsIntervalValue).let { if (it < 0) 0 else it }
+                                val currentIndex =
+                                    tpsSteps.indexOf(tpsIntervalValue).let { if (it < 0) 0 else it }
                                 tpsIntervalValue = tpsSteps[(currentIndex + 1) % tpsSteps.size]
                                 onTpsIntervalChange(tpsIntervalValue)
                             },
                             modifier = Modifier
-                                .size(24.dp)
-                                .weight(0.8f),
+                                .size(20.dp)
+                                .weight(1f),
                             shape = CircleShape,
                             enabled = !isScreenBlocked,
                             colors = ButtonDefaults.buttonColors(backgroundColor = Color.Transparent)
@@ -1236,14 +1349,40 @@ class MainActivity : ComponentActivity(),
                             Text(
                                 text = "$tpsIntervalValue\ntps",
                                 color = MaterialTheme.colors.primary,
-                                fontSize = 10.sp,
-                                lineHeight = 10.sp,
+                                fontSize = 9.sp,
+                                lineHeight = 9.sp,
                                 textAlign = TextAlign.Center,
                                 modifier = Modifier.fillMaxWidth()         // centra o texto no botão
                             )
                         }
                     }
-                    if(recordedRecords.isNotEmpty()) {
+                    Button(
+                        onClick = {
+                            val next = (throwMultiplier % 2) + 1
+                            onThrowMultiplierChange(next)
+                        },
+                        modifier = Modifier
+                            .size(20.dp)
+                            .weight(1f),
+                        shape = CircleShape,
+                        enabled = !isScreenBlocked,
+                        colors = ButtonDefaults.buttonColors(backgroundColor = Color.Transparent)
+                    ) {
+                        Text(text = "x$throwMultiplier", fontSize = 14.sp, color = MaterialTheme.colors.primary)
+                    }
+                    /*Text(
+                    text = "x$throwMultiplier",
+                    color = MaterialTheme.colors.primaryVariant,
+                    fontSize = 12.sp,
+                    modifier = Modifier
+                        .clickable(enabled = !isScreenBlocked) {
+                            // calcula o próximo valor entre 1 e 4
+                            val next = (throwMultiplier % 2) + 1
+                            onThrowMultiplierChange(next)
+                        }
+                        .padding(start = 4.dp)  // espacinhos, se quiseres
+                )*/
+                    /*if (recordedRecords.isNotEmpty()) {
                         Button(
                             onClick = onIncrementLast,
                             modifier = Modifier
@@ -1255,14 +1394,15 @@ class MainActivity : ComponentActivity(),
                         ) {
                             Text(text = "+", fontSize = 20.sp, color = MaterialTheme.colors.primary)
                         }
-                    }else{
+                    } else {
                         Text(
-                            text="",
+                            text = "",
                             Modifier
                                 .size(20.dp)
                                 .weight(0.8f),
                         )
-                    }
+                    }*/
+
                     /*Button(onClick = {
                         swapMetronomeValue = (swapMetronomeValue+1) % 2
                         onSwapMetronomeChange(swapMetronomeValue)
@@ -1313,7 +1453,6 @@ class MainActivity : ComponentActivity(),
                     }*/
 
                 }
-                StatisticsDisplay(recordedRecords = recordedRecords)
 
 
                 /*Column(
@@ -1334,31 +1473,881 @@ class MainActivity : ComponentActivity(),
                             .clickable { }
                     )
                 }*/
+                /*Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .weight(0.001f)
+                        .padding(horizontal = 0.dp, vertical = 0.dp)
+                        .background(color = Color.Black),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
 
-                RecordedValuesList(
-                    recordedRecords   = recordedRecords,
-                    saveAll           = saveAll,
-                    onSaveAllChange   = onSaveAllChange,
-                    swapCount         = swapCount,
-                    showNoteDialog            = showNoteDialog,
-                    onShowNoteDialogChange    = { showNoteDialog = it }
-                )
+                }*/
+                //CountsHistogramAccWorkout(recordedRecords)
+                //CountsHistogramAcc(items)
+
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .weight(0.54f)
+                        .padding(horizontal = 0.dp, vertical = 0.dp)
+                        .clip(RoundedCornerShape(16.dp))
+                        .background(color = Color(0xFF444444)),
+                    //horizontalArrangement = Arrangement.SpaceBetween,
+                    horizontalArrangement = Arrangement.Center,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    if (isScreenBlocked) {
+                        Box(
+                            modifier = Modifier.fillMaxSize(),
+                            contentAlignment = Alignment.Center,
+                            ) {
+                            Text(
+                                text = accelerometerReading,
+                                fontSize = 24.sp,
+                                color = MaterialTheme.colors.primaryVariant
+                            )
+                        }
+                    }
+                    if (!isScreenBlocked) {
+
+                        val reversedList = recordedRecords.reversed()
+
+                        if (swapDisplay==1){
+
+                            /*Box(
+                                modifier = Modifier
+                                    .weight(0.16f)
+                                    .fillMaxHeight(0.76f)
+                                    .padding(start = 12.dp, end = 0.dp)
+                                    .clip(RoundedCornerShape(12.dp))
+                                    .background(Color(0xFF444444)),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Column(
+                                    modifier = Modifier.fillMaxSize(),
+                                    verticalArrangement = Arrangement.SpaceBetween,
+                                    horizontalAlignment = Alignment.CenterHorizontally
+                                ) {
+                                    Button(
+                                        onClick = onResetCounter,
+                                        modifier = Modifier
+                                            .size(24.dp),
+                                        shape = RectangleShape,
+                                        colors = ButtonDefaults.buttonColors(backgroundColor = Color.Transparent)
+                                    ) {
+                                        Icon(
+                                            painter = painterResource(id = R.drawable.trash),
+                                            contentDescription = "Trash",
+                                            modifier = Modifier.size(24.dp),
+                                            tint = Color(0xFFFFA500)
+                                        )
+                                    }
+
+                                    Button(
+                                        onClick = { },
+                                        modifier = Modifier
+                                            .size(24.dp),
+                                        shape = RectangleShape,
+                                        colors = ButtonDefaults.buttonColors(backgroundColor = Color.Transparent)
+                                    ) {
+                                        Icon(
+                                            painter = painterResource(id = R.drawable.clear),
+                                            contentDescription = "Clear",
+                                            modifier = Modifier.size(24.dp),
+                                            tint = Color(0xFFFFA500)
+                                        )
+                                    }
+                                }
+                            }*/
+
+                            Column(
+                                modifier = Modifier
+                                    .fillMaxWidth(0.95f)
+                                    .padding(end=8.dp)
+                                    .fillMaxHeight(),
+                                horizontalAlignment = Alignment.CenterHorizontally,
+                                verticalArrangement = Arrangement.SpaceEvenly,
+                            ) {
+                                if (reversedList.isNotEmpty()) {
+                                    val fakeHistoryItem = HistoryItem(
+                                        dateTime = "now",
+                                        throwRecords = recordedRecords.toList(),
+                                        note = "",
+                                        attempts = 0,
+                                        totalThrows = 0,
+                                        maxThrow = 0,
+                                        averageThrow = 0f,
+                                        tps = 0f
+                                    )
+                                    var totalDrag by remember { mutableStateOf(0f) }
+
+                                    val graphTitle = when (swapCountValue) {
+                                        0 -> when (swapGraphValue) {
+                                            0 -> "Attempts (thr)"
+                                            1 -> "Sorted Attempts (thr)"
+                                            2 -> "Estimated Progress (thr)"
+                                            else -> ""
+                                        }
+                                        1 -> when (swapGraphValue) {
+                                            0 -> "Attempts (sec)"
+                                            1 -> "Sorted Attempts (sec)"
+                                            2 -> "Estimated Progress (sec)"
+                                            else -> ""
+                                        }
+                                        2 -> when (swapGraphValue) {
+                                            0 -> "Attempts (tps)"
+                                            1 -> "Sorted Attempts (tps)"
+                                            2 -> "Estimated Progress (tps)"
+                                            else -> ""
+                                        }
+                                        else -> ""
+                                    }
+
+                                    Text(
+                                        text = graphTitle,
+                                        modifier = Modifier.padding(top = 2.dp, bottom=6.dp),
+                                        fontSize = 12.sp,
+                                        color = MaterialTheme.colors.primary
+                                    )
+
+
+                                    Box(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .weight(1f) // ocupa o espaço disponível no meio
+                                            .pointerInput(Unit) {
+                                                detectHorizontalDragGestures(
+                                                    onDragEnd = {
+                                                        if (totalDrag > 5) {
+                                                            swapGraphValue =
+                                                                (swapGraphValue - 1 + 3) % 3
+                                                        } else if (totalDrag < -5) {
+                                                            swapGraphValue =
+                                                                (swapGraphValue + 1) % 3
+                                                        }
+                                                        onSwapGraphChange(swapGraphValue)
+                                                        totalDrag = 0f
+                                                    },
+                                                    onHorizontalDrag = { _, dragAmount ->
+                                                        totalDrag += dragAmount
+                                                    }
+                                                )
+                                            },
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        if (swapCountValue==0){
+                                            when (swapGraphValue) {
+                                                0 -> AttemptsBarChart(recordedRecords)
+                                                1 -> AttemptsBarSortChart(recordedRecords)
+                                                2 -> ProgressEstimationChart(listOf(fakeHistoryItem))
+                                            }
+                                        }
+                                        if (swapCountValue==1){
+                                            when (swapGraphValue) {
+                                                0 -> AttemptsDurationBarChart(recordedRecords)
+                                                1 -> AttemptsDurationBarSortChart(recordedRecords)
+                                                2 -> ProgressEstimationChart(listOf(fakeHistoryItem))
+                                            }
+                                        }
+                                        if (swapCountValue==2){
+                                            when (swapGraphValue) {
+                                                0 -> AttemptsTpsBarChart(recordedRecords)
+                                                1 -> AttemptsTpsBarSortChart(recordedRecords)
+                                                2 -> ProgressEstimationChart(listOf(fakeHistoryItem))
+                                            }
+                                        }
+
+                                    }
+
+                                    Row(
+                                        modifier = Modifier.padding(bottom = 4.dp),
+                                        horizontalArrangement = Arrangement.Center,
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        repeat(3) { index ->
+                                            Box(
+                                                modifier = Modifier
+                                                    .padding(horizontal = 4.dp)
+                                                    .size(6.dp)
+                                                    .clip(CircleShape)
+                                                    .background(
+                                                        if (swapGraphValue == index) MaterialTheme.colors.primary else Color.Gray
+                                                    )
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+
+                           /* Box(
+                                modifier = Modifier
+                                    .weight(0.16f)
+                                    .fillMaxHeight(0.76f)
+                                    .padding(start = 6.dp, end = 12.dp)
+                                    .clip(RoundedCornerShape(12.dp))
+                                    .background(Color(0xFF444444)),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Column(
+                                    modifier = Modifier.fillMaxSize(),
+                                    verticalArrangement = Arrangement.SpaceBetween,
+                                    horizontalAlignment = Alignment.CenterHorizontally
+                                ) {
+                                    Button(
+                                        onClick = onIncrementLast,
+                                        modifier = Modifier
+                                            .size(24.dp),
+                                        shape = RectangleShape,
+                                        colors = ButtonDefaults.buttonColors(backgroundColor = Color.Transparent)
+                                    ) {
+                                        Icon(
+                                            painter = painterResource(id = R.drawable.club_add),
+                                            contentDescription = "Add",
+                                            modifier = Modifier.size(24.dp),
+                                            tint = Color(0xFFFFA500)
+                                        )
+                                    }
+                                    Button(
+                                        onClick = onDecrementLast,
+                                        modifier = Modifier
+                                            .size(24.dp),
+                                        shape = RectangleShape,
+                                        colors = ButtonDefaults.buttonColors(backgroundColor = Color.Transparent)
+                                    ) {
+                                        Icon(
+                                            painter = painterResource(id = R.drawable.club_sub),
+                                            contentDescription = "Subtract",
+                                            modifier = Modifier.size(24.dp),
+                                            tint = Color(0xFFFFA500)
+                                        )
+                                    }
+                                }
+                            }*/
+
+
+                        }
+
+                        if (swapDisplay==0){
+
+                            Box(
+                                modifier = Modifier
+                                    .weight(0.16f)
+                                    .fillMaxHeight(0.76f)
+                                    .padding(start = 12.dp, end = 4.dp)
+                                    .clip(RoundedCornerShape(0.dp))
+                                    .background(Color(0xFF444444)),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Column(
+                                    modifier = Modifier.fillMaxSize(),
+                                    verticalArrangement = Arrangement.SpaceBetween,
+                                    horizontalAlignment = Alignment.CenterHorizontally
+                                ) {
+                                    Button(
+                                        onClick = {
+                                            onSaveAllChange(false)
+                                            showNoteDialog = true
+                                        },
+                                        modifier = Modifier
+                                            .size(20.dp),
+                                        shape = RectangleShape,
+                                        colors = ButtonDefaults.buttonColors(backgroundColor = Color.Transparent)
+                                    ) {
+                                        Icon(
+                                            painter = painterResource(id = R.drawable.save_arrow),
+                                            contentDescription = "Trash",
+                                            modifier = Modifier.size(20.dp),
+                                            tint = Color(0xFFFFA500)
+                                        )
+                                    }
+
+                                    Button(
+                                        onClick = onResetCounter,
+                                        modifier = Modifier
+                                            .size(20.dp),
+                                        shape = RectangleShape,
+                                        colors = ButtonDefaults.buttonColors(backgroundColor = Color.Transparent)
+                                    ) {
+                                        Icon(
+                                            painter = painterResource(id = R.drawable.trash),
+                                            contentDescription = "Clear",
+                                            modifier = Modifier.size(20.dp),
+                                            tint = Color(0xFFFFA500)
+                                        )
+                                    }
+                                }
+                            }
+
+                            /*Column(
+                                modifier = Modifier
+                                    .fillMaxHeight()
+                                    .padding(start = 4.dp),
+                                verticalArrangement = Arrangement.SpaceEvenly,
+                                horizontalAlignment = Alignment.CenterHorizontally
+                            ) {
+                                Button(
+                                    onClick = {
+                                        onSaveAllChange(false)
+                                        showNoteDialog = true
+                                    },
+                                    modifier = Modifier
+                                        .size(18.dp)
+                                        .align(alignment = Alignment.CenterHorizontally),
+                                    shape = RectangleShape,
+                                    colors = ButtonDefaults.buttonColors(backgroundColor = Color.Transparent)
+                                ) {
+                                    Text(text = "S", fontSize = 14.sp, color = MaterialTheme.colors.primary)
+                                }
+                                Button(
+                                    onClick = onResetCounter,
+                                    modifier = Modifier
+                                        .size(18.dp)
+                                        .align(alignment = Alignment.CenterHorizontally),
+                                    shape = RectangleShape,
+                                    colors = ButtonDefaults.buttonColors(backgroundColor = Color.Transparent)
+                                ) {
+                                    Text(text = "✕", fontSize = 14.sp, color = MaterialTheme.colors.primary)
+                                }
+                            }*/
+
+
+                            Column(
+                                modifier = Modifier
+                                    .weight(0.68f)
+                                    .padding(start=4.dp, end=4.dp, top=0.dp, bottom=4.dp)
+                                    .verticalScroll(rememberScrollState()),
+                                horizontalAlignment = Alignment.CenterHorizontally
+                            ) {
+
+                                if (reversedList.isNotEmpty()) {
+                                    Text(
+                                        text = "Attempts",
+                                        modifier = Modifier.padding(top = 2.dp, bottom=2.dp),
+                                        fontSize = 12.sp,
+                                        color = MaterialTheme.colors.primary
+                                    )
+                                    reversedList.forEachIndexed { index, record ->
+                                        val originalIndex = recordedRecords.lastIndex - index
+                                        val isSelected = selectedIndices.contains(originalIndex)
+                                        Row(
+                                            modifier = Modifier
+                                                .padding(vertical = 2.dp)
+                                                .fillMaxWidth()
+                                                .background(if (isSelected) Color(0x44FFFFFF) else Color.Transparent)
+                                                .clickable {
+                                                    if (isSelected) {
+                                                        selectedIndices.remove(originalIndex)
+                                                    } else {
+                                                        selectedIndices.add(originalIndex)
+                                                    }
+                                                },
+                                            horizontalArrangement = Arrangement.SpaceBetween
+                                        ) {
+                                            Text(
+                                                text = "${reversedList.size - index}:",
+                                                modifier = Modifier.weight(0.16f),
+                                                color = Color.White,
+                                                fontSize = 11.sp,
+                                                textAlign = TextAlign.Start
+                                            )
+                                            Text(
+                                                text = "${"%4d".format(record.count)}t",
+                                                modifier = Modifier.weight(0.28f),
+                                                color = Color.White,
+                                                fontSize = 11.sp
+                                            )
+                                            Text(
+                                                text = if (record.durationSeconds > 600)
+                                                    record.durationSeconds.toTimeString()
+                                                else
+                                                    "%.1f".format(record.durationSeconds) + "s",
+                                                modifier = Modifier.weight(0.28f),
+                                                color = Color.White,
+                                                fontSize = 11.sp,
+                                                textAlign = TextAlign.Center
+                                            )
+                                            Text(
+                                                text = buildAnnotatedString {
+                                                    append("%.1f".format(record.frequency))
+                                                    withStyle(SpanStyle(fontSize = 8.sp)) {
+                                                        append("tps")
+                                                    }
+                                                },
+                                                modifier = Modifier.weight(0.28f),
+                                                color = Color.White,
+                                                fontSize = 11.sp,
+                                                textAlign = TextAlign.Right
+                                            )
+                                        }
+                                    }
+
+                                }
+
+
+
+
+                            }
+                            /*Column(
+                                modifier = Modifier
+                                    .fillMaxHeight()
+                                    .padding(end = 4.dp),
+                                verticalArrangement = Arrangement.SpaceEvenly, // espaços iguais antes, entre e depois
+                                horizontalAlignment = Alignment.CenterHorizontally // centraliza horizontalmente
+                            ) {
+                                Button(
+                                    onClick = onIncrementLast,
+                                    modifier = Modifier
+                                        .size(20.dp)
+                                        .weight(0.5f),
+                                    shape = CircleShape,
+                                    enabled = !isScreenBlocked,
+                                    colors = ButtonDefaults.buttonColors(backgroundColor = Color.Transparent)
+                                ) {
+                                    Text(text = "+", fontSize = 20.sp, color = MaterialTheme.colors.primary)
+                                }
+                                Button(
+                                    onClick = onDecrementLast,
+                                    modifier = Modifier
+                                        .size(20.dp)
+                                        .weight(0.5f),
+                                    shape = CircleShape,
+                                    enabled = !isScreenBlocked,
+                                    colors = ButtonDefaults.buttonColors(backgroundColor = Color.Transparent)
+                                ) {
+                                    Text(text = "-", fontSize = 20.sp, color = MaterialTheme.colors.primary)
+                                }
+                            }*/
+                            Box(
+                                modifier = Modifier
+                                    .weight(0.16f)
+                                    .fillMaxHeight(0.76f)
+                                    .padding(start = 4.dp, end = 12.dp)
+                                    .clip(RoundedCornerShape(0.dp))
+                                    .background(Color(0xFF444444)),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Column(
+                                    modifier = Modifier.fillMaxSize(),
+                                    verticalArrangement = Arrangement.SpaceBetween,
+                                    horizontalAlignment = Alignment.CenterHorizontally
+                                ) {
+                                    Button(
+                                        onClick = onIncrementLast,
+                                        modifier = Modifier
+                                            .size(20.dp),
+                                        shape = RectangleShape,
+                                        colors = ButtonDefaults.buttonColors(backgroundColor = Color.Transparent)
+                                    ) {
+                                        Icon(
+                                            painter = painterResource(id = R.drawable.club_add),
+                                            contentDescription = "Add",
+                                            modifier = Modifier.size(20.dp),
+                                            tint = Color(0xFFFFA500)
+                                        )
+                                    }
+                                    Button(
+                                        onClick = onDecrementLast,
+                                        modifier = Modifier
+                                            .size(24.dp),
+                                        shape = RectangleShape,
+                                        colors = ButtonDefaults.buttonColors(backgroundColor = Color.Transparent)
+                                    ) {
+                                        Icon(
+                                            painter = painterResource(id = R.drawable.club_sub),
+                                            contentDescription = "Subtract",
+                                            modifier = Modifier.size(24.dp),
+                                            tint = Color(0xFFFFA500)
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                /*Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .weight(0.01f)
+                        .padding(horizontal = 0.dp, vertical = 0.dp)
+                        .background(color = Color.Black),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+
+                }*/
+                LazyRow(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .weight(0.15f)
+                        .clip(RoundedCornerShape(0.dp))
+                        .background(Color.Black)
+                        .padding(horizontal = 32.dp),
+                    horizontalArrangement = Arrangement.spacedBy(0.dp),
+                    //contentPadding = PaddingValues(horizontal = 30.dp)
+                ) {
+                    //StatisticsDisplay(recordedRecords = recordedRecords)
+                    val counts    = recordedRecords.map { it.count }.ifEmpty { listOf(0) }
+                    val durations = recordedRecords.map { it.durationSeconds }.ifEmpty { listOf(0f) }
+                    val tpsValues = recordedRecords.map { it.frequency }.ifEmpty { listOf(0f) }
+                    val attempts = counts.size.takeIf { it > 0 } ?: 0
+
+
+                    // Contadores
+                    val lastCount      = counts.last()
+                    val sumCount       = counts.sum()
+                    val maxCount       = counts.maxOrNull()!!
+                    val avgCount       = counts.average().toFloat()
+                    val avgBestCount3  = counts.sortedDescending().take(3).average().toFloat()
+                    val avgBestCount5  = counts.sortedDescending().take(5).average().toFloat()
+                    val avgBestCount10 = counts.sortedDescending().take(10).average().toFloat()
+
+                    // Durações
+                    val lastDuration       = durations.last()
+                    val sumDuration        = durations.sum()
+                    val maxDuration        = durations.maxOrNull()!!
+                    val avgDuration        = durations.average().toFloat()
+                    val avgBestDuration3   = durations.sortedDescending().take(3).average().toFloat()
+                    val avgBestDuration5   = durations.sortedDescending().take(5).average().toFloat()
+                    val avgBestDuration10  = durations.sortedDescending().take(10).average().toFloat()
+
+                    // TPS (throws per second)
+                    val lastTps        = tpsValues.last()
+                    val maxTps         = tpsValues.maxOrNull()!!
+                    val avgTps         = tpsValues.average().toFloat()
+                    val avgBestTps3    = tpsValues.sortedDescending().take(3).average().toFloat()
+                    val avgBestTps5    = tpsValues.sortedDescending().take(5).average().toFloat()
+                    val avgBestTps10   = tpsValues.sortedDescending().take(10).average().toFloat()
+
+                    // Cria uma Row para exibir os outros valores, cada um centralizado
+                    /*Row(
+                        modifier = Modifier
+                            .padding(horizontal = 0.dp, vertical = 0.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                    ) {*/
+                    if(swapCount==0) {
+                        item {
+                            Text(
+                                text = buildAnnotatedString {
+                                    withStyle(style = SpanStyle(fontSize = 9.sp)) {
+                                        append("runs\n")
+                                    }
+                                    withStyle(style = SpanStyle(fontSize = 12.sp)) {
+                                        append("$attempts")
+                                    }
+                                },
+                                modifier = Modifier.fillParentMaxWidth(0.2f),
+                                textAlign = TextAlign.Center,
+                                color = MaterialTheme.colors.primary,
+                                style = MaterialTheme.typography.body2.copy(lineHeight = 12.sp)
+                            )
+                        }
+                        item {
+                            Text(
+                                text = buildAnnotatedString {
+                                    withStyle(style = SpanStyle(fontSize = 9.sp)) {
+                                        append("total\n")
+                                    }
+                                    withStyle(style = SpanStyle(fontSize = 12.sp)) {
+                                        append("$sumCount")
+                                    }
+                                },
+                                modifier = Modifier.fillParentMaxWidth(0.2f),
+                                textAlign = TextAlign.Center,
+                                color = MaterialTheme.colors.primary,
+                                style = MaterialTheme.typography.body2.copy(lineHeight = 12.sp)
+                            )
+                        }
+                        item {
+                            Text(
+                                text = buildAnnotatedString {
+                                    withStyle(style = SpanStyle(fontSize = 9.sp)) {
+                                        append("last\n")
+                                    }
+                                    withStyle(style = SpanStyle(fontSize = 12.sp)) {
+                                        append("$lastCount")
+                                    }
+                                },
+                                modifier = Modifier.fillParentMaxWidth(0.2f),
+                                textAlign = TextAlign.Center,
+                                color = MaterialTheme.colors.primary,
+                                style = MaterialTheme.typography.body2.copy(lineHeight = 12.sp)
+                            )
+                        }
+                        item {
+                            Text(
+                                text = buildAnnotatedString {
+                                    withStyle(style = SpanStyle(fontSize = 9.sp)) {
+                                        append("max\n")
+                                    }
+                                    withStyle(style = SpanStyle(fontSize = 12.sp)) {
+                                        append("$maxCount")
+                                    }
+                                },
+                                modifier = Modifier.fillParentMaxWidth(0.2f),
+                                textAlign = TextAlign.Center,
+                                color = MaterialTheme.colors.primary,
+                                style = MaterialTheme.typography.body2.copy(lineHeight = 12.sp)
+                            )
+                        }
+                        item {
+                            Text(
+                                text = buildAnnotatedString {
+                                    withStyle(style = SpanStyle(fontSize = 9.sp)) {
+                                        append("avg\n")
+                                    }
+                                    withStyle(style = SpanStyle(fontSize = 12.sp)) {
+                                        append("%.1f".format(avgCount))
+                                    }
+                                },
+                                modifier = Modifier.fillParentMaxWidth(0.2f),
+                                textAlign = TextAlign.Center,
+                                color = MaterialTheme.colors.primary,
+                                style = MaterialTheme.typography.body2.copy(lineHeight = 12.sp)
+                            )
+                        }
+                        item {
+                            Text(
+                                text = buildAnnotatedString {
+                                    withStyle(style = SpanStyle(fontSize = 9.sp)) {
+                                        append("b03\n")
+                                    }
+                                    withStyle(style = SpanStyle(fontSize = 12.sp)) {
+                                        append("%.1f".format(avgBestCount3))
+                                    }
+                                },
+                                modifier = Modifier.fillParentMaxWidth(0.2f),
+                                textAlign = TextAlign.Center,
+                                color = MaterialTheme.colors.primary,
+                                style = MaterialTheme.typography.body2.copy(lineHeight = 12.sp)
+                            )
+                        }
+                        item {
+                            Text(
+                                text = buildAnnotatedString {
+                                    withStyle(style = SpanStyle(fontSize = 9.sp)) {
+                                        append("b05\n")
+                                    }
+                                    withStyle(style = SpanStyle(fontSize = 12.sp)) {
+                                        append("%.1f".format(avgBestCount5))
+                                    }
+                                },
+                                modifier = Modifier.fillParentMaxWidth(0.2f),
+                                textAlign = TextAlign.Center,
+                                color = MaterialTheme.colors.primary,
+                                style = MaterialTheme.typography.body2.copy(lineHeight = 12.sp)
+                            )
+                        }
+                        item {
+                            Text(
+                                text = buildAnnotatedString {
+                                    withStyle(style = SpanStyle(fontSize = 9.sp)) {
+                                        append("b10\n")
+                                    }
+                                    withStyle(style = SpanStyle(fontSize = 12.sp)) {
+                                        append("%.1f".format(avgBestCount10))
+                                    }
+                                },
+                                modifier = Modifier.fillParentMaxWidth(0.2f),
+                                textAlign = TextAlign.Center,
+                                color = MaterialTheme.colors.primary,
+                                style = MaterialTheme.typography.body2.copy(lineHeight = 12.sp)
+                            )
+                        }
+
+
+
+
+                    }
+                    if(swapCount==1) {
+                        item {
+                            Text(
+                                text = "runs\n${attempts}",
+                                modifier = Modifier.fillParentMaxWidth(0.2f),
+                                textAlign = TextAlign.Center,
+                                color = MaterialTheme.colors.primary,
+                                style = MaterialTheme.typography.body2.copy(fontSize = 10.sp, lineHeight = 12.sp)
+                            )
+                        }
+                        item {
+                            Text(
+                                text = "total\n${"%.1f".format(sumDuration)}",
+                                modifier = Modifier.fillParentMaxWidth(0.2f),
+                                textAlign = TextAlign.Center,
+                                color = MaterialTheme.colors.primary,
+                                style = MaterialTheme.typography.body2.copy(fontSize = 10.sp, lineHeight = 12.sp)
+                            )
+                        }
+                        item {
+                            Text(
+                                text = "last\n${"%.1f".format(lastDuration)}",
+                                modifier = Modifier.fillParentMaxWidth(0.2f),
+                                textAlign = TextAlign.Center,
+                                color = MaterialTheme.colors.primary,
+                                style = MaterialTheme.typography.body2.copy(fontSize = 10.sp, lineHeight = 12.sp)
+                            )
+                        }
+                        item {
+                            Text(
+                                text = "max\n${"%.1f".format(maxDuration)}",
+                                modifier = Modifier.fillParentMaxWidth(0.2f),
+                                textAlign = TextAlign.Center,
+                                color = MaterialTheme.colors.primary,
+                                style = MaterialTheme.typography.body2.copy(fontSize = 10.sp, lineHeight = 12.sp)
+                            )
+                        }
+                        item {
+                            Text(
+                                text = "avg\n${"%.1f".format(avgDuration)}",
+                                modifier = Modifier.fillParentMaxWidth(0.2f),
+                                textAlign = TextAlign.Center,
+                                color = MaterialTheme.colors.primary,
+                                style = MaterialTheme.typography.body2.copy(fontSize = 10.sp, lineHeight = 12.sp)
+                            )
+                        }
+                        item {
+                            Text(
+                                text = "b03\n${"%.1f".format(avgBestDuration3)}",
+                                modifier = Modifier.fillParentMaxWidth(0.2f),
+                                textAlign = TextAlign.Center,
+                                color = MaterialTheme.colors.primary,
+                                style = MaterialTheme.typography.body2.copy(fontSize = 10.sp, lineHeight = 12.sp)
+                            )
+                        }
+                        item {
+                            Text(
+                                text = "b05\n${"%.1f".format(avgBestDuration5)}",
+                                modifier = Modifier.fillParentMaxWidth(0.2f),
+                                textAlign = TextAlign.Center,
+                                color = MaterialTheme.colors.primary,
+                                style = MaterialTheme.typography.body2.copy(fontSize = 10.sp, lineHeight = 12.sp)
+                            )
+                        }
+                        item {
+                            Text(
+                                text = "b10\n${"%.1f".format(avgBestDuration10)}",
+                                modifier = Modifier.fillParentMaxWidth(0.2f),
+                                textAlign = TextAlign.Center,
+                                color = MaterialTheme.colors.primary,
+                                style = MaterialTheme.typography.body2.copy(fontSize = 10.sp, lineHeight = 12.sp)
+                            )
+                        }
+                    }
+                    if(swapCount==2) {
+                        item {
+                            Text(
+                                text = "runs\n${attempts}",
+                                modifier = Modifier.fillParentMaxWidth(0.2f),
+                                textAlign = TextAlign.Center,
+                                color = MaterialTheme.colors.primary,
+                                style = MaterialTheme.typography.body2.copy(fontSize = 10.sp, lineHeight = 12.sp)
+                            )
+                        }
+                        item {
+                            Text(
+                                text = "total\n${"%.1f".format(avgTps)}",
+                                modifier = Modifier.fillParentMaxWidth(0.2f),
+                                textAlign = TextAlign.Center,
+                                color = MaterialTheme.colors.primary,
+                                style = MaterialTheme.typography.body2.copy(fontSize = 10.sp, lineHeight = 12.sp)
+                            )
+                        }
+                        item {
+                            Text(
+                                text = "last\n${"%.1f".format(lastTps)}",
+                                modifier = Modifier.fillParentMaxWidth(0.2f),
+                                textAlign = TextAlign.Center,
+                                color = MaterialTheme.colors.primary,
+                                style = MaterialTheme.typography.body2.copy(fontSize = 10.sp, lineHeight = 12.sp)
+                            )
+                        }
+                        item {
+                            Text(
+                                text = "max\n${"%.1f".format(maxTps)}",
+                                modifier = Modifier.fillParentMaxWidth(0.2f),
+                                textAlign = TextAlign.Center,
+                                color = MaterialTheme.colors.primary,
+                                style = MaterialTheme.typography.body2.copy(fontSize = 10.sp, lineHeight = 12.sp)
+                            )
+                        }
+                        item {
+                            Text(
+                                text = "avg\n${"%.1f".format(avgTps)}",
+                                modifier = Modifier.fillParentMaxWidth(0.2f),
+                                textAlign = TextAlign.Center,
+                                color = MaterialTheme.colors.primary,
+                                style = MaterialTheme.typography.body2.copy(fontSize = 10.sp, lineHeight = 12.sp)
+                            )
+                        }
+                        item {
+                            Text(
+                                text = "b03\n${"%.1f".format(avgBestTps3)}",
+                                modifier = Modifier.fillParentMaxWidth(0.2f),
+                                textAlign = TextAlign.Center,
+                                color = MaterialTheme.colors.primary,
+                                style = MaterialTheme.typography.body2.copy(fontSize = 10.sp, lineHeight = 12.sp)
+                            )
+                        }
+                        item {
+                            Text(
+                                text = "b05\n${"%.1f".format(avgBestTps5)}",
+                                modifier = Modifier.fillParentMaxWidth(0.2f),
+                                textAlign = TextAlign.Center,
+                                color = MaterialTheme.colors.primary,
+                                style = MaterialTheme.typography.body2.copy(fontSize = 10.sp, lineHeight = 12.sp)
+                            )
+                        }
+                        item {
+                            Text(
+                                text = "b10\n${"%.1f".format(avgBestTps10)}",
+                                modifier = Modifier.fillParentMaxWidth(0.2f),
+                                textAlign = TextAlign.Center,
+                                color = MaterialTheme.colors.primary,
+                                style = MaterialTheme.typography.body2.copy(fontSize = 10.sp, lineHeight = 12.sp)
+                            )
+                        }
+                    }
+                }
+                /*Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .weight(0.01f)
+                        .padding(horizontal = 0.dp, vertical = 0.dp)
+                        .background(color = Color.Black),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+
+                }*/
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .weight(0.08f)
+                        .padding(horizontal = 70.dp, vertical = 0.dp)
+                        .clip(RoundedCornerShape(12.dp)) // aplica cantos arredondados
+                        .background(color = Color.Black),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                }
             }
 
             Button(
                 onClick = { onOpenSettingsDialog() },
                 modifier = Modifier
-                    .align(Alignment.TopEnd)
-                    .padding(horizontal = 19.dp, vertical = 16.dp)
-                    .size(48.dp),
+                    .align(Alignment.BottomCenter)
+                    .padding(vertical = 2.dp)
+                    .padding(start = 48.dp)
+                    .size(22.dp),
                 shape = CircleShape,
                 enabled = !isScreenBlocked,
                 colors = ButtonDefaults.buttonColors(backgroundColor = Color.Transparent)
             ) {
                 Icon(
-                    painter = painterResource(id = R.drawable.settings),
+                    painter = painterResource(id = R.drawable.settings02),
                     contentDescription = "Sliders Options",
-                    modifier = Modifier.size(26.dp),
+                    modifier = Modifier.size(16.dp),
                     tint = MaterialTheme.colors.primary
                 )
                 //Text("DEL\nLAST", color = Color.White, fontSize = 10.sp, lineHeight = 10.sp)
@@ -1370,20 +2359,38 @@ class MainActivity : ComponentActivity(),
                     showNoteDialog = true
                 },
                 modifier = Modifier
-                    .align(Alignment.TopStart)
-                    .padding(horizontal = 19.dp, vertical = 16.dp)
-                    .size(48.dp),
+                    .align(Alignment.BottomCenter)
+                    .padding(vertical = 2.dp)
+                    .padding(end = 48.dp)
+                    .size(22.dp),
                 shape = CircleShape,
                 enabled = !isScreenBlocked,
                 colors = ButtonDefaults.buttonColors(backgroundColor = Color.Transparent)
             ) {
                 Icon(
-                    painter = painterResource(id = R.drawable.save_arrow),
+                    painter = painterResource(id = R.drawable.save02),
                     contentDescription = "Save Workout",
-                    modifier = Modifier.size(20.dp),
+                    modifier = Modifier.size(18.dp),
                     tint = MaterialTheme.colors.primary
                 )
-                //Text("SAVE", color = Color.White, fontSize = 10.sp)
+            }
+
+            Button(
+                onClick = onOpenGroupedHistory,
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .padding(vertical = 2.dp)
+                    .size(22.dp),
+                shape = CircleShape,
+                enabled = !isScreenBlocked,
+                colors = ButtonDefaults.buttonColors(backgroundColor = Color.Transparent)
+            ) {
+                Icon(
+                    painter = painterResource(id = R.drawable.broken_arrow),
+                    contentDescription = "Save Workout",
+                    modifier = Modifier.size(18.dp),
+                    tint = MaterialTheme.colors.primary
+                )
             }
 
             /*Column(
@@ -1443,18 +2450,18 @@ class MainActivity : ComponentActivity(),
                 }
             }*/
 
-            Button(
+            /*Button(
                 onClick = onResetCounter,
                 modifier = Modifier
                     .align(Alignment.BottomCenter)
-                    .padding(vertical = 0.dp, horizontal = 0.dp)
+                    .padding(vertical = 4.dp, horizontal = 0.dp)
                     .size(20.dp),
                 //shape = CircleShape,
                 enabled = !isScreenBlocked,
                 colors = ButtonDefaults.buttonColors(backgroundColor = Color.Transparent)
             ) {
-                Text(text = "✕", fontSize = 12.sp, color = MaterialTheme.colors.primary)
-            }
+                Text(text = "✕", fontSize = 14.sp, color = MaterialTheme.colors.primary)
+            }*/
         }
 
         if (showSettingsDialog) {
@@ -2079,7 +3086,7 @@ class MainActivity : ComponentActivity(),
                                     tint = bgColor
                                 )
                             }
-                            Spacer(modifier = Modifier.height(12.dp))
+                            Spacer(modifier = Modifier.height(8.dp))
                             accelPropertiesState.forEach { (label, value) ->
                                 Text(
                                     text = "$label: ${value.toString().take(6)}",
@@ -2090,6 +3097,12 @@ class MainActivity : ComponentActivity(),
                                 )
                                 Spacer(modifier = Modifier.height(4.dp))
                             }
+                            Text(
+                                text = "min z: ${"%.1f".format(minZ)}; max Z: ${"%.1f".format(maxZ)}",
+                                color = MaterialTheme.colors.primary,
+                                modifier = Modifier.padding(vertical = 0.dp),
+                                style = MaterialTheme.typography.body2.copy(fontSize = 10.sp),
+                            )
                             Spacer(modifier = Modifier.height(8.dp))
 
                             Row(
@@ -2115,7 +3128,11 @@ class MainActivity : ComponentActivity(),
                                     }
                                 }
                                 Button(
-                                    onClick = { resetAccelerometer()},
+                                    onClick = {
+                                        minZ=100f
+                                        maxZ=-100f
+                                        resetAccelerometer()
+                                    },
                                     modifier = Modifier
                                         .size(32.dp)
                                         .clip(CircleShape),
@@ -2407,13 +3424,16 @@ class MainActivity : ComponentActivity(),
 
                             Button(
                                 onClick = {
-                                    if (saveAll) {
-                                        onResetListWithNote(noteText)
-                                    } else {
-                                        saveLastEntry(noteText)
+                                    if (saveAll || selectedIndices.isNotEmpty()) {
+                                        if (saveAll) {
+                                            onResetListWithNote(noteText)
+                                        } else {
+                                            saveSelectedEntries(selectedIndices, noteText)
+                                        }
+                                        noteText = ""
+                                        selectedIndices.clear()
+                                        showNoteDialog = false
                                     }
-                                    noteText = ""
-                                    showNoteDialog = false
                                 },
                                 modifier = Modifier
                                     .size(26.dp)
@@ -2482,22 +3502,56 @@ class MainActivity : ComponentActivity(),
         }
         if (showDiffsDialog) {
             Dialog(
-                onDismissRequest = onCloseDiffsDialog,
+                onDismissRequest = {
+                    minZ=100f
+                    maxZ=-100f
+                    onCloseDiffsDialog()
+                },
                 properties = DialogProperties(
                     dismissOnBackPress = true,
                     dismissOnClickOutside = true
                 )
             ) {
+
                 Surface(
-                    shape = RoundedCornerShape(16.dp),
-                    color = Color(0xCC363F4C),
-                    elevation = 16.dp,
                     modifier = Modifier
-                        .fillMaxWidth(0.6f)        // ocupa 80% da largura da tela
-                        .heightIn(max = 240.dp)    // altura máxima
+                        .fillMaxSize(),
+                    color = Color.Black,
                 ) {
-                    // Agrupa e ordena os diffs
-                    val grouped = lastDiffs
+                    Column(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .verticalScroll(rememberScrollState())
+                            .padding(0.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                    ) {
+                        Spacer(modifier = Modifier.height(48.dp))
+
+                        AttemptsBarChart(recordedRecords)
+                        CountsHistogramWorkOut(recordedRecords)
+                        val fakeHistoryItem = HistoryItem(
+                            dateTime = "now",
+                            throwRecords = recordedRecords.toList(),
+                            note = "",
+                            attempts = 0,
+                            totalThrows = 0,
+                            maxThrow = 0,
+                            averageThrow = 0f,
+                            tps = 0f
+                        )
+                        ProgressEstimationChart(listOf(fakeHistoryItem))
+                        Spacer(modifier = Modifier.height(16.dp))
+                        Text(
+                            text = "min z: ${"%.1f".format(minZ)}; max Z: ${"%.1f".format(maxZ)}",
+                            color = MaterialTheme.colors.primary,
+                            modifier = Modifier.padding(vertical = 0.dp),
+                            style = MaterialTheme.typography.body2.copy(fontSize = 10.sp),
+                        )
+                        Spacer(modifier = Modifier.height(32.dp))
+
+                    }
+
+                    /*val grouped = lastDiffs
                         .groupingBy { it }
                         .eachCount()
                         .entries
@@ -2525,7 +3579,7 @@ class MainActivity : ComponentActivity(),
                                 )
                             }
                         }
-                    }
+                    }*/
                 }
             }
         }
@@ -2637,7 +3691,7 @@ class MainActivity : ComponentActivity(),
                             backgroundColor = Color.Transparent
                         ),
                     ) {
-                        if (swapCount == 1) {
+                        if (swapCount == 0) {
                             Icon(
                                 painter = painterResource(id = R.drawable.finger_counting),
                                 contentDescription = "Throws count",
@@ -2645,7 +3699,7 @@ class MainActivity : ComponentActivity(),
                                 tint = MaterialTheme.colors.primary
                             )
                         }
-                        if (swapCount == 0) {
+                        if (swapCount == 1) {
                             Icon(
                                 painter = painterResource(id = R.drawable.chronometer_v2),
                                 contentDescription = "Time count",
@@ -2655,7 +3709,7 @@ class MainActivity : ComponentActivity(),
                         }
                     }
 
-                    Button(
+                    /*Button(
                         onClick = {
 
                         },
@@ -2701,7 +3755,7 @@ class MainActivity : ComponentActivity(),
                                 tint = MaterialTheme.colors.primary
                             )
                         }
-                    }
+                    }*/
 
                 }
 
@@ -2769,6 +3823,10 @@ class MainActivity : ComponentActivity(),
 
 
 
+                    val hours = floor(globalDuration / 3600)
+                    val minutes = (globalDuration % 3600) / 60
+                    val seconds = globalDuration % 60
+
 
                     Column(
                         modifier = Modifier
@@ -2797,7 +3855,7 @@ class MainActivity : ComponentActivity(),
                                 style = MaterialTheme.typography.body2.copy(fontSize = 10.sp, lineHeight = 12.sp)
                             )
 
-                            if (swapCountValue == 1) {
+                            if (swapCountValue == 0) {
                                 Text(
                                     text = "$globalMaxThrow",
                                     color = MaterialTheme.colors.primary,
@@ -2811,7 +3869,7 @@ class MainActivity : ComponentActivity(),
                                     style = MaterialTheme.typography.body2.copy(fontSize = 10.sp, lineHeight = 12.sp)
                                 )
                             }
-                            if (swapCountValue == 0) {
+                            if (swapCountValue == 1) {
                                 Text(
                                     text = globalMaxDuration.toTimeAnnotated(),
                                     color = MaterialTheme.colors.primary,
@@ -2826,10 +3884,44 @@ class MainActivity : ComponentActivity(),
                                 )
                             }
                         }
+
                     }
                 }
-                Spacer(modifier = Modifier.height(112.dp))
 
+                //val items = remember { mutableStateListOf<HistoryItem>() }
+                val globalAttempts = items.sumOf { it.attempts }
+                val globalThrows = items.sumOf { it.totalThrows }
+                val globalDuration = items.sumOf { it.totalDuration.toDouble() }.toFloat()
+                val hours = floor(globalDuration / 3600)
+                val minutes = (globalDuration % 3600) / 60
+                val seconds = globalDuration % 60
+                Spacer(modifier = Modifier.height(16.dp))
+
+                Text(
+                    text = "Other Stats",
+                    color = MaterialTheme.colors.primary,
+                    modifier = Modifier.padding(start=16.dp, end=24.dp, top=8.dp, bottom=4.dp),
+                    style = MaterialTheme.typography.body2.copy(fontSize = 10.sp, lineHeight = 12.sp)
+                )
+                Text(
+                    text = "Total Attempts: ${globalAttempts}",
+                    color = MaterialTheme.colors.primary,
+                    modifier = Modifier.padding(start=20.dp, end=24.dp, top=0.dp, bottom=0.dp),
+                    style = MaterialTheme.typography.body2.copy(fontSize = 10.sp, lineHeight = 12.sp)
+                )
+                Text(
+                    text = "Total Throws: ${globalThrows}",
+                    color = MaterialTheme.colors.primary,
+                    modifier = Modifier.padding(start=20.dp, end=24.dp, top=0.dp, bottom=0.dp),
+                    style = MaterialTheme.typography.body2.copy(fontSize = 10.sp, lineHeight = 12.sp)
+                )
+                Text(
+                    text = "Total Time: ${"%.0f".format(hours)}h ${"%.0f".format(minutes)}m ${"%.0f".format(seconds)}s",
+                    color = MaterialTheme.colors.primary,
+                    modifier = Modifier.padding(start=20.dp, end=24.dp, top=0.dp, bottom=0.dp),
+                    style = MaterialTheme.typography.body2.copy(fontSize = 10.sp, lineHeight = 12.sp)
+                )
+                Spacer(modifier = Modifier.height(50.dp))
 
                 /*Button(
                     onClick = {
@@ -2986,7 +4078,9 @@ class MainActivity : ComponentActivity(),
             modifier = Modifier
                 .fillMaxSize()
                 .verticalScroll(rememberScrollState())
-                .padding(0.dp)
+                .padding(0.dp),
+            verticalArrangement = Arrangement.Center,
+            horizontalAlignment = Alignment.CenterHorizontally
         ) {
             if (sortedFiltered.isEmpty()) {
                 Text(
@@ -3010,7 +4104,7 @@ class MainActivity : ComponentActivity(),
                         backgroundColor = Color.Transparent
                     ),
                 ) {
-                    if (swapCount == 1) {
+                    if (swapCount == 0) {
                         Icon(
                             painter = painterResource(id = R.drawable.finger_counting),
                             contentDescription = "Throws count",
@@ -3018,7 +4112,7 @@ class MainActivity : ComponentActivity(),
                             tint = MaterialTheme.colors.primary
                         )
                     }
-                    if (swapCount == 0) {
+                    if (swapCount == 1) {
                         Icon(
                             painter = painterResource(id = R.drawable.chronometer_v2),
                             contentDescription = "Time count",
@@ -3132,7 +4226,7 @@ class MainActivity : ComponentActivity(),
                             modifier = Modifier.weight(0.19f),
                             style = MaterialTheme.typography.body2.copy(fontSize = 9.sp, lineHeight = 12.sp)
                         )
-                        if (swapCountValue == 1) {
+                        if (swapCountValue == 0) {
                             Text(
                                 text = globalMaxThrow.toString(),
                                 color = MaterialTheme.colors.primary,
@@ -3146,7 +4240,7 @@ class MainActivity : ComponentActivity(),
                                 style = MaterialTheme.typography.body2.copy(fontSize = 9.sp, lineHeight = 12.sp)
                             )
                         }
-                        if (swapCountValue == 0) {
+                        if (swapCountValue == 1) {
                             Text(
                                 text = globalMaxDuration.toTimeAnnotated(),
                                 color = MaterialTheme.colors.primary,
@@ -3165,19 +4259,37 @@ class MainActivity : ComponentActivity(),
                 }
 
                 Text(
-                    text = "Histogram",
+                    text = "Runs Distribution",
                     color = MaterialTheme.colors.primary,
                     modifier = Modifier.padding(start=16.dp, end=24.dp, top=4.dp, bottom=0.dp),
                     style = MaterialTheme.typography.body2.copy(fontSize = 10.sp)
                 )
                 CountsHistogram(totalEntries)
+                Spacer(modifier = Modifier.height(8.dp))
+                Text(
+                    text = "Runs Over X",
+                    color = MaterialTheme.colors.primary,
+                    modifier = Modifier.padding(start=16.dp, end=24.dp, top=4.dp, bottom=0.dp),
+                    style = MaterialTheme.typography.body2.copy(fontSize = 10.sp)
+                )
+                CountsHistogramAcc(totalEntries)
+                Spacer(modifier = Modifier.height(8.dp))
                 Text(
                     text = "Progress Estimation",
                     color = MaterialTheme.colors.primary,
                     modifier = Modifier.padding(start=16.dp, end=24.dp, top=4.dp, bottom=0.dp),
                     style = MaterialTheme.typography.body2.copy(fontSize = 10.sp)
                 )
-                ProgressEstimationChart(totalEntries)
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth(0.8f)
+                        .height(100.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    ProgressEstimationChart(totalEntries)
+                }
+                Spacer(modifier = Modifier.height(8.dp))
+
                 Text(
                     text = "Max Throws Progress",
                     color = MaterialTheme.colors.primary,
@@ -3309,7 +4421,9 @@ class MainActivity : ComponentActivity(),
             modifier = Modifier
                 .fillMaxSize()
                 .verticalScroll(rememberScrollState())
-                .padding(0.dp)
+                .padding(0.dp),
+            verticalArrangement = Arrangement.Center,          // centra verticalmente
+            horizontalAlignment = Alignment.CenterHorizontally // centra horizontalmente
         ) {
 
 
@@ -3468,19 +4582,36 @@ class MainActivity : ComponentActivity(),
                 ChunkedAverageLineChart(filtered)*/
 
                 Text(
-                    text = "Histogram",
+                    text = "Runs Distribution",
                     color = MaterialTheme.colors.primary,
                     modifier = Modifier.padding(start=16.dp, end=24.dp, top=4.dp, bottom=0.dp),
                     style = MaterialTheme.typography.body2.copy(fontSize = 10.sp)
                 )
                 CountsHistogram(sortedFiltered)
+                Spacer(modifier = Modifier.height(8.dp))
+                Text(
+                    text = "Runs Over X",
+                    color = MaterialTheme.colors.primary,
+                    modifier = Modifier.padding(start=16.dp, end=24.dp, top=4.dp, bottom=0.dp),
+                    style = MaterialTheme.typography.body2.copy(fontSize = 10.sp)
+                )
+                CountsHistogramAcc(sortedFiltered)
+                Spacer(modifier = Modifier.height(8.dp))
                 Text(
                     text = "Progress Estimation",
                     color = MaterialTheme.colors.primary,
                     modifier = Modifier.padding(start=16.dp, end=24.dp, top=4.dp, bottom=0.dp),
                     style = MaterialTheme.typography.body2.copy(fontSize = 10.sp)
                 )
-                ProgressEstimationChart(sortedFiltered)
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth(0.8f)
+                        .height(100.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    ProgressEstimationChart(sortedFiltered)
+                }
+                Spacer(modifier = Modifier.height(8.dp))
                 Text(
                     text = "Max Throws Progress",
                     color = MaterialTheme.colors.primary,
@@ -3488,7 +4619,7 @@ class MainActivity : ComponentActivity(),
 
                     style = MaterialTheme.typography.body2.copy(fontSize = 10.sp)
                 )
-                MaxThrowBarChart(sortedFiltered)
+                MaxThrowBarChart(sortedFiltered.reversed())
 
                 Text(
                     text = "Avg Throws Progress",
@@ -3496,7 +4627,7 @@ class MainActivity : ComponentActivity(),
                     modifier = Modifier.padding(start=16.dp, end=24.dp, top=4.dp, bottom=0.dp),
                     style = MaterialTheme.typography.body2.copy(fontSize = 10.sp)
                 )
-                AverageThrowBarChart(sortedFiltered)
+                AverageThrowBarChart(sortedFiltered.reversed())
 
 
                 Text(
@@ -3816,7 +4947,8 @@ class MainActivity : ComponentActivity(),
                 .fillMaxSize()
                 .verticalScroll(rememberScrollState())
                 .padding(0.dp),
-            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.Center,          // centra verticalmente
+            horizontalAlignment = Alignment.CenterHorizontally // centra horizontalmente
         ) {
 
 
@@ -3844,9 +4976,34 @@ class MainActivity : ComponentActivity(),
                 modifier = Modifier.padding(vertical = 0.dp),
                 style = MaterialTheme.typography.body2.copy(fontSize = 10.sp),
             )
-            CountsHistogramWorkOut(historyItem.throwRecords)
-            ProgressEstimationChart(listOf(historyItem))
-            AttemptsBarChart(historyItem.throwRecords)
+
+            Spacer(modifier = Modifier.height(4.dp))
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth(0.8f)
+                    .height(100.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                AttemptsBarChart(historyItem.throwRecords)
+            }
+            Spacer(modifier = Modifier.height(8.dp))
+
+
+            CountsHistogram(listOf(historyItem))
+            Spacer(modifier = Modifier.height(8.dp))
+
+            CountsHistogramAcc(listOf(historyItem))
+            Spacer(modifier = Modifier.height(8.dp))
+
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth(0.8f)
+                    .height(100.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                ProgressEstimationChart(listOf(historyItem))
+            }
+
 
             // Estatísticas
             Row(
@@ -4215,7 +5372,7 @@ class MainActivity : ComponentActivity(),
     @Composable
     fun ProgressEstimationChart(
         totalEntries: List<HistoryItem>,
-        maxBars: Int = 12
+        maxBars: Int = 8
     ) {
         val totalThrows = totalEntries.flatMap { it.throwRecords.map { tr -> tr.count } }
 
@@ -4270,7 +5427,7 @@ class MainActivity : ComponentActivity(),
                 }
                 .takeWhile {
                     val logVal = log10InverseProbGreaterOrEqualK(it)
-                    10.0.pow(logVal.toDouble()) <= 10_000
+                    10.0.pow(logVal.toDouble()) <= 1_000
                 }
                 .count()
             binCount <= maxBars
@@ -4283,7 +5440,7 @@ class MainActivity : ComponentActivity(),
             }
             .takeWhile {
                 val logVal = log10InverseProbGreaterOrEqualK(it)
-                10.0.pow(logVal.toDouble()) <= 10_000
+                10.0.pow(logVal.toDouble()) <= 1_000
             }
             .toList()
 
@@ -4303,8 +5460,7 @@ class MainActivity : ComponentActivity(),
         AndroidView(
             modifier = Modifier
                 .fillMaxWidth()
-                .height(100.dp)
-                .padding(start = 16.dp, end = 8.dp),
+                .fillMaxHeight(0.8f),
             factory = { ctx ->
                 BarChart(ctx).apply {
                     description.isEnabled = false
@@ -4336,11 +5492,20 @@ class MainActivity : ComponentActivity(),
                     valueFormatter = object : ValueFormatter() {
                         override fun getBarLabel(barEntry: BarEntry?): String {
                             return barEntry?.y?.let {
-                                val raw = 10.0.pow(it.toDouble())
-                                when {
-                                    raw < 1_000 -> raw.toInt().toString()
-                                    raw < 1_000_000 -> String.format("%.1fk", raw / 1_000)
-                                    else -> String.format("%.1fM", raw / 1_000_000)
+                                val value = 10.0.pow(it.toDouble())
+                                return when {
+                                    value >= 1_000_000 -> {
+                                        val millions = value / 1_000_000
+                                        when {
+                                            millions >= 100 -> "${millions.toInt()}M"
+                                            millions >= 10  -> String.format("%.1fM", millions)
+                                            else            -> String.format("%.2fM", millions)
+                                        }
+                                    }
+                                    value >= 100_000 -> "${(value / 1_000).toInt()}K"
+                                    value >= 10_000  -> String.format("%.1fK", value / 1_000)
+                                    value >= 1_000   -> String.format("%.2fK", value / 1_000)
+                                    else             -> value.toInt().toString()
                                 }
                             } ?: ""
                         }
@@ -4348,7 +5513,8 @@ class MainActivity : ComponentActivity(),
 
                 }
                 chart.data = BarData(dataSet)
-
+                chart.setMinOffset(0f)
+                //chart.setViewPortOffsets(0f, 0f, 0f, 0f)
                 chart.setOnChartValueSelectedListener(object : OnChartValueSelectedListener {
                     override fun onValueSelected(e: Entry?, h: Highlight?) {
                         selectedIndex = e?.x?.toInt()
@@ -4369,7 +5535,8 @@ class MainActivity : ComponentActivity(),
                     axisMaximum = (nBins+0).toFloat()*/
                     labelRotationAngle = 90f
                     textColor = primaryColor
-                    textSize = 8f
+                    textSize = 7f
+                    yOffset =2f
                     valueFormatter = object : ValueFormatter() {
                         override fun getFormattedValue(value: Float): String {
                             val idx = value.toInt()
@@ -4384,15 +5551,15 @@ class MainActivity : ComponentActivity(),
                     isGranularityEnabled = true
                     //setLabelCount(6, true)
                     textColor = primaryColor
-                    textSize = 8f
+                    textSize = 7f
                     valueFormatter = object : ValueFormatter() {
                         override fun getFormattedValue(value: Float): String {
                             val actual = 10.0.pow(value.toDouble()).toInt()
                             return when {
                                 actual >= 1_000_000 -> "1M"
-                                actual >= 100_000 -> "100k"
-                                actual >= 10_000 -> "10k"
-                                actual >= 1_000 -> "1k"
+                                actual >= 100_000 -> "100K"
+                                actual >= 10_000 -> "10K"
+                                actual >= 1_000 -> "1K"
                                 actual >= 100 -> "100"
                                 actual >= 10 -> "10"
                                 else -> actual.toString()
@@ -4436,18 +5603,30 @@ class MainActivity : ComponentActivity(),
         }
     }
 
-
-
-
-
+    @Composable
+    fun CountsHistogramAcc(
+        historyItems: List<HistoryItem>,
+        maxBins: Int = 15
+    ) {
+        val counts = historyItems.flatMap { it.throwRecords.map { tr -> tr.count } }
+        CountsHistogramA(counts, maxBins)
+    }
 
     @Composable
-    fun CountsHistogram(
-        historyItems: List<HistoryItem>,
-        maxBins: Int = 20
+    fun CountsHistogramAccWorkout(
+        throwRecords: List<ThrowRecord>,
+        maxBins: Int = 8
+    ) {
+        val counts = throwRecords.map { it.count }
+        CountsHistogramA(counts, maxBins)
+    }
+
+    @Composable
+    fun CountsHistogramA(
+        allCounts: List<Int>,
+        maxBins: Int = 5
     ) {
         // 1) extrai todos os counts
-        val allCounts = historyItems.flatMap { it.throwRecords.map { tr -> tr.count } }
         if (allCounts.isEmpty()) {
             Text(
                 text = "No Data",
@@ -4459,7 +5638,7 @@ class MainActivity : ComponentActivity(),
         }
 
         // 2) lista de candidatos de binSize
-        val candidates = listOf(1,2,5,10,20,50,100,200,500,1000,2000,5000,10000)
+        val candidates = listOf(10,20,50,100,200,500,1000,2000,5000,10000)
 
         // 3) encontra maxCount
         val maxCount = allCounts.maxOrNull() ?: 0
@@ -4479,6 +5658,310 @@ class MainActivity : ComponentActivity(),
             allCounts.count { it in start..end }
         }
 
+        //7) CCDF
+        val total = freqPerBin.values.sum()
+
+        var acc = 0
+        val ccdfPerBin: Map<Int, Int> = freqPerBin.mapValues { (_, freq) ->
+            val ccdf = total - acc
+            acc += freq
+            ccdf
+        }
+
+
+        // Estado para saber qual bin foi clicado (ou null se nenhum)
+        var selectedBin by remember { mutableStateOf<Int?>(null) }
+
+        // 7) desenha o gráfico com AndroidView
+        val primaryColor = MaterialTheme.colors.primary.toArgb()
+        /*AndroidView(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(100.dp),
+            factory = { ctx ->
+                BarChart(ctx).apply {
+                    description.isEnabled = false
+                    setDrawValueAboveBar(true)
+                    axisRight.isEnabled = false
+                    legend.isEnabled = false
+                    setScaleEnabled(false)
+                    setPinchZoom(false)
+                    setDoubleTapToZoomEnabled(false)
+                    isDragEnabled = false
+                    setHighlightPerTapEnabled(true)
+                }
+
+            },
+            update = { chart ->
+                // monta entradas
+                val entries = ccdfPerBin.map { (binIdx, freq) ->
+                    BarEntry(binIdx.toFloat(), freq.toFloat())
+                }
+                val dataSet = BarDataSet(entries, "Histogram").apply {
+                    color = primaryColor
+                    valueTextColor = primaryColor
+                    valueTextSize = 7f
+                    valueFormatter = object : ValueFormatter() {
+                        override fun getBarLabel(barEntry: BarEntry): String {
+                            val value = barEntry.y
+                            return when {
+                                value >= 1_000_000 -> {
+                                    val millions = value / 1_000_000
+                                    when {
+                                        millions >= 100 -> "${millions.toInt()}M"
+                                        millions >= 10  -> String.format("%.1fM", millions)
+                                        else            -> String.format("%.2fM", millions)
+                                    }
+                                }
+                                value >= 100_000 -> "${(value / 1_000).toInt()}K"
+                                value >= 10_000  -> String.format("%.1fK", value / 1_000)
+                                value >= 1_000   -> String.format("%.2fK", value / 1_000)
+                                else             -> value.toInt().toString()
+                            }
+                        }
+                    }
+                }
+                chart.data = BarData(dataSet)
+
+
+                chart.setOnTouchListener { v, event ->
+                    when (event.actionMasked) {
+                        MotionEvent.ACTION_DOWN -> {
+                            (v.parent as? ViewGroup)?.requestDisallowInterceptTouchEvent(true)
+                        }
+                        MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                            (v.parent as? ViewGroup)?.requestDisallowInterceptTouchEvent(false)
+                            v.performClick()  // ✅ necessário para acessibilidade
+                        }
+                    }
+                    false  // deixa o gráfico continuar a tratar o toque
+                }
+
+                // configura eixo X
+                chart.xAxis.apply {
+                    setDrawGridLines(false)
+                    setDrawAxisLine(false)
+                    setDrawLabels(true)
+                    position = XAxis.XAxisPosition.BOTTOM
+                    isGranularityEnabled = true
+                    granularity = 1f
+                    //setLabelCount(nBins+1, true)
+                    axisMinimum = -0.5f
+                    axisMaximum = (nBins - 1) + 0.5f
+                    labelRotationAngle = 90f
+                    textColor = primaryColor
+                    textSize = 7f
+                    yOffset = 0f
+                    valueFormatter = object : ValueFormatter() {
+                        override fun getFormattedValue(value: Float): String {
+                            val bin = value.toInt()
+                            val start = bin * effectiveBinSize
+                            val end = (bin + 1) * effectiveBinSize
+                            return ">$start"
+                        }
+                    }
+                }
+
+                chart.axisLeft.apply {
+                    setDrawGridLines(false)
+                    setDrawAxisLine(false)
+                    setXOffset(0f)
+                }
+                chart.axisRight.isEnabled = false
+                chart.isDragEnabled = true
+                chart.setVisibleXRangeMaximum(8f)
+
+                // ---- AQUI: regista o clique na barra ----
+                chart.setOnChartValueSelectedListener(object : OnChartValueSelectedListener {
+                    override fun onValueSelected(e: Entry, h: Highlight) {
+                        selectedBin = e.x.toInt()
+                    }
+                    override fun onNothingSelected() { /* nada */ }
+                })
+
+                chart.invalidate()
+            }
+        )*/
+
+        AndroidView(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(100.dp),
+            factory = { ctx ->
+                HorizontalBarChart(ctx).apply {
+                    description.isEnabled = false
+                    legend.isEnabled = false
+                    setDrawValueAboveBar(true)
+                    setPinchZoom(false)
+                    setDoubleTapToZoomEnabled(false)
+                    axisRight.isEnabled = false
+                    isDragEnabled = false
+                    setHighlightPerTapEnabled(true)
+                }
+            },
+            update = { chart ->
+                val exponent =1f
+                val bs       = effectiveBinSize
+                val freqMap  = ccdfPerBin  // Map<Int,Int>
+
+                // 1) Cria as entradas com transformação
+                val rawEntries = freqMap.map { (binIdx, freq) ->
+                    val yTrans = freq.toFloat().pow(exponent)
+                    BarEntry(binIdx.toFloat(), yTrans)
+                }
+
+                // 2) Prepara o DataSet (com cor, tamanho e formatter)
+                val dataSet = BarDataSet(rawEntries, "").apply {
+                    color           = primaryColor
+                    valueTextColor  = primaryColor
+                    valueTextSize   = 9f
+                    setDrawValues(true)
+
+                    valueFormatter = object : ValueFormatter() {
+                        override fun getBarLabel(barEntry: BarEntry): String {
+                            val bin        = barEntry.x.toInt()
+                            val threshold  = bin * bs
+                            val ccdfValue  = freqMap[bin] ?: 0
+                            val pct        = if (total > 0) ccdfValue * 100f / total else 0f
+                            return "$ccdfValue (> $threshold)"
+                        }
+                    }
+                }
+
+                // 3) Define os dados no gráfico, usando o dataset acima
+                val barData = BarData(dataSet).apply {
+                    barWidth = 0.8f
+                }
+                chart.data = barData
+                chart.setFitBars(true)
+                chart.setClipValuesToContent(false)              // 1️⃣ permite desenhar labels para lá dos limites
+
+                chart.setExtraOffsets(
+                    /* left   = */ 0f,
+                    /* top    = */ 0f,
+                    /* right  = */ 80f,  // ajusta este valor até não cortar mais
+                    /* bottom = */ 0f
+                )
+                // 4) Oculta todos os eixos
+                chart.xAxis.isEnabled     = false
+                chart.axisLeft.isEnabled  = false
+                chart.axisRight.isEnabled = false
+
+                // 5) Trata o toque
+                chart.setOnChartValueSelectedListener(object : OnChartValueSelectedListener {
+                    override fun onValueSelected(e: Entry, h: Highlight) {
+                        selectedBin = e.x.toInt()
+                    }
+                    override fun onNothingSelected() = Unit
+                })
+
+                chart.invalidate()
+            }
+        )
+
+
+        // Se houver uma bin seleccionada, mostra um Dialog Compose “inline”
+        selectedBin?.let { binIdx ->
+            val threshold = binIdx * effectiveBinSize
+            val ccdfValue = ccdfPerBin[binIdx] ?: 0
+            val percentage = if (total > 0) (ccdfValue * 100f) / total else 0f
+
+            Dialog(
+                onDismissRequest = { selectedBin = null },
+                properties = DialogProperties(
+                    dismissOnBackPress = true,
+                    dismissOnClickOutside = true
+                )
+            ) {
+                Surface(
+                    shape = RoundedCornerShape(16.dp),
+                    color = Color(0xCC363F4C),  // preto semitransparente
+                    elevation = 16.dp,
+                    modifier = Modifier
+                        .size(width = 120.dp, height = 80.dp)
+                        .padding(0.dp)
+                ) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .padding(12.dp),
+                        verticalArrangement = Arrangement.Center,
+                        horizontalAlignment = Alignment.CenterHorizontally
+                    ) {
+
+                        Text(
+                            text = "> $threshold",
+                            color = Color.White,
+                            fontSize = 16.sp,
+                        )
+
+                        Spacer(modifier = Modifier.height(4.dp))
+
+                        Text(
+                            text = "$ccdfValue runs (${String.format("%.1f", percentage)}%)",
+                            color = Color.White,
+                            fontSize = 10.sp,
+                            textAlign = TextAlign.Center
+                        )
+
+                    }
+                }
+            }
+        }
+    }
+
+
+
+    @Composable
+    fun CountsHistogram(
+        historyItems: List<HistoryItem>,
+        maxBins: Int = 30
+    ) {
+        // 1) extrai todos os counts
+        val allCounts = historyItems.flatMap { it.throwRecords.map { tr -> tr.count } }
+        if (allCounts.isEmpty()) {
+            Text(
+                text = "No Data",
+                color = MaterialTheme.colors.primary,
+                modifier = Modifier.fillMaxWidth(),
+                textAlign = TextAlign.Center
+            )
+            return
+        }
+
+        // 2) lista de candidatos de binSize
+        val candidates = listOf(10,20,50,100,200,500,1000,2000,5000,10000)
+
+        // 3) encontra maxCount
+        val maxCount = allCounts.maxOrNull() ?: 0
+
+        // 4) escolhe o menor binSize tal que (maxCount/binSize +1) <= maxBins
+        val effectiveBinSize = candidates.firstOrNull { size ->
+            (maxCount / size) + 1 <= maxBins
+        } ?: candidates.last()
+
+        // 5) calcula número real de bins
+        val nBins = (maxCount / effectiveBinSize) + 1
+
+        // 6) agrupa frequências por bin
+        val freqPerBin = (0 until nBins).associateWith { binIdx ->
+            val start = binIdx * effectiveBinSize
+            val end   = start + effectiveBinSize - 1
+            allCounts.count { it in start..end }
+        }
+
+        /* ------------------------------------------------------------------ */
+        /* 7) CCDF: quantas entradas ficam ESTRITAMENTE ACIMA do limite do bin */
+        /* ------------------------------------------------------------------ */
+        //val sortedFreq = freqPerBin.toSortedMap()          // garante ordem crescente
+        val total      = freqPerBin.values.sum() + (freqPerBin[0] ?: 0)          // total de amostras
+
+        var acumulada = 0
+        val ccdfPerBin: Map<Int, Int> = freqPerBin.mapValues { (_, freq) ->
+            acumulada += freq            // CDF parcial (≤ bin)
+            total - acumulada            // CCDF ( > bin )
+        }
+
         // Estado para saber qual bin foi clicado (ou null se nenhum)
         var selectedBin by remember { mutableStateOf<Int?>(null) }
 
@@ -4487,20 +5970,20 @@ class MainActivity : ComponentActivity(),
         AndroidView(
             modifier = Modifier
                 .fillMaxWidth()
-                .height(120.dp)
-                .padding(vertical = 8.dp, horizontal = 8.dp),
+                .height(100.dp),
             factory = { ctx ->
                 BarChart(ctx).apply {
                     description.isEnabled = false
+                    setDrawValueAboveBar(true)
                     axisRight.isEnabled = false
                     legend.isEnabled = false
-                    // Desliga gestos de escala/zoom
-                    setScaleEnabled(false)                 // desliga zoom em X e Y
-                    setPinchZoom(false)                    // desliga pinch-to-zoom
-                    setDoubleTapToZoomEnabled(false)       // desliga double-tap
-                    isDragEnabled         = false         // impede arrastar/scroll dentro do chart
-                    setHighlightPerTapEnabled(true)       // mantém só o “tap” para highlight/cli
+                    setScaleEnabled(false)
+                    setPinchZoom(false)
+                    setDoubleTapToZoomEnabled(false)
+                    isDragEnabled = false
+                    setHighlightPerTapEnabled(true)
                 }
+
             },
             update = { chart ->
                 // monta entradas
@@ -4512,11 +5995,40 @@ class MainActivity : ComponentActivity(),
                     valueTextColor = primaryColor
                     valueTextSize = 7f
                     valueFormatter = object : ValueFormatter() {
-                        override fun getBarLabel(barEntry: BarEntry) =
-                            barEntry.y.toInt().toString()
+                        override fun getBarLabel(barEntry: BarEntry): String {
+                            val value = barEntry.y
+                            return when {
+                                value >= 1_000_000 -> {
+                                    val millions = value / 1_000_000
+                                    when {
+                                        millions >= 100 -> "${millions.toInt()}M"
+                                        millions >= 10  -> String.format("%.1fM", millions)
+                                        else            -> String.format("%.2fM", millions)
+                                    }
+                                }
+                                value >= 100_000 -> "${(value / 1_000).toInt()}K"
+                                value >= 10_000  -> String.format("%.1fK", value / 1_000)
+                                value >= 1_000   -> String.format("%.2fK", value / 1_000)
+                                else             -> value.toInt().toString()
+                            }
+                        }
                     }
                 }
                 chart.data = BarData(dataSet)
+
+
+                chart.setOnTouchListener { v, event ->
+                    when (event.actionMasked) {
+                        MotionEvent.ACTION_DOWN -> {
+                            (v.parent as? ViewGroup)?.requestDisallowInterceptTouchEvent(true)
+                        }
+                        MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                            (v.parent as? ViewGroup)?.requestDisallowInterceptTouchEvent(false)
+                            v.performClick()  // ✅ necessário para acessibilidade
+                        }
+                    }
+                    false  // deixa o gráfico continuar a tratar o toque
+                }
 
                 // configura eixo X
                 chart.xAxis.apply {
@@ -4526,18 +6038,19 @@ class MainActivity : ComponentActivity(),
                     position = XAxis.XAxisPosition.BOTTOM
                     isGranularityEnabled = true
                     granularity = 1f
-                    setLabelCount(nBins, true)
-                    axisMinimum = 0f
-                    axisMaximum = (nBins - 1).toFloat()
+                    //setLabelCount(nBins+1, true)
+                    axisMinimum = -0.5f
+                    axisMaximum = (nBins - 1) + 0.5f
                     labelRotationAngle = 90f
                     textColor = primaryColor
-                    textSize  = 8f
+                    textSize = 7f
+                    yOffset = 0f
                     valueFormatter = object : ValueFormatter() {
                         override fun getFormattedValue(value: Float): String {
                             val bin = value.toInt()
                             val start = bin * effectiveBinSize
-                            val end = (bin + 1) * effectiveBinSize-1
-                            return "$end"
+                            val end = (bin + 1) * effectiveBinSize
+                            return "$start-$end"
                         }
                     }
                 }
@@ -4548,6 +6061,8 @@ class MainActivity : ComponentActivity(),
                     setXOffset(0f)
                 }
                 chart.axisRight.isEnabled = false
+                chart.isDragEnabled = true
+                chart.setVisibleXRangeMaximum(8f)
 
                 // ---- AQUI: regista o clique na barra ----
                 chart.setOnChartValueSelectedListener(object : OnChartValueSelectedListener {
@@ -4565,6 +6080,7 @@ class MainActivity : ComponentActivity(),
         selectedBin?.let { binIdx ->
             val start = binIdx * effectiveBinSize
             val end = start + effectiveBinSize - 1
+            val binValue = freqPerBin[binIdx] ?: 0
 
             // filtra e ordena os ThrowRecord desse bin
             val attemptsInBin = historyItems
@@ -4593,17 +6109,23 @@ class MainActivity : ComponentActivity(),
                     color = Color(0xCC363F4C),  // preto semitransparente
                     elevation = 16.dp,
                     modifier = Modifier
-                        .size(width = 80.dp, height = 120.dp)
+                        .size(width = 100.dp, height = 140.dp)
                         .padding(0.dp)
                 ) {
                     Column(modifier = Modifier.padding(12.dp)) {
                         Text(
                             text = "$start–$end",
-                            fontSize = 12.sp,
+                            fontSize = 16.sp,
                             modifier = Modifier.fillMaxWidth(),
                             textAlign = TextAlign.Center
                         )
-                        Spacer(Modifier.height(8.dp))
+                        Text(
+                            text = "($binValue runs)",
+                            fontSize = 10.sp,
+                            modifier = Modifier.fillMaxWidth(),
+                            textAlign = TextAlign.Center
+                        )
+                        Spacer(Modifier.height(4.dp))
                         LazyColumn(
                             modifier = Modifier
                                 .heightIn(max = 120.dp)
@@ -4633,7 +6155,7 @@ class MainActivity : ComponentActivity(),
         val allCounts = throwRecords.map { it.count }
         if (allCounts.isEmpty()) {
             Text(
-                text = "Sem lançamentos para mostrar",
+                text = "",
                 color = MaterialTheme.colors.primary,
                 modifier = Modifier.fillMaxWidth(),
                 textAlign = TextAlign.Center
@@ -4642,7 +6164,7 @@ class MainActivity : ComponentActivity(),
         }
 
         // 2) define lista de candidatos de binSize
-        val candidates = listOf(1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000)
+        val candidates = listOf(10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000)
 
         // 3) encontra maxCount
         val maxCount = allCounts.maxOrNull() ?: 0
@@ -4656,11 +6178,24 @@ class MainActivity : ComponentActivity(),
         val nBins = (maxCount / effectiveBinSize) + 1
 
         // 6) agrupa frequências por bin
-        val freqPerBin = (0 until nBins).associateWith { binIdx ->
+        val freqPerBin = (0 until maxBins).associateWith { binIdx ->
             val start = binIdx * effectiveBinSize
             val end = start + effectiveBinSize - 1
             allCounts.count { it in start..end }
         }
+
+        /* ------------------------------------------------------------------ */
+        /* 7) CCDF: quantas entradas ficam ESTRITAMENTE ACIMA do limite do bin */
+        /* ------------------------------------------------------------------ */
+        val sortedFreq = freqPerBin.toSortedMap()          // garante ordem crescente
+        val total      = sortedFreq.values.sum()           // total de amostras
+
+        var acumulada = 0
+        val ccdfPerBin: Map<Int, Int> = sortedFreq.mapValues { (_, freq) ->
+            acumulada += freq            // CDF parcial (≤ bin)
+            total - acumulada            // CCDF ( > bin )
+        }
+
 
         // estado para saber qual bin foi clicado
         var selectedBin by remember { mutableStateOf<Int?>(null) }
@@ -4670,8 +6205,7 @@ class MainActivity : ComponentActivity(),
         AndroidView(
             modifier = Modifier
                 .fillMaxWidth()
-                .height(120.dp)
-                .padding(vertical = 8.dp, horizontal = 8.dp),
+                .fillMaxHeight(0.8f),
             factory = { ctx ->
                 BarChart(ctx).apply {
                     description.isEnabled = false
@@ -4686,8 +6220,20 @@ class MainActivity : ComponentActivity(),
             },
             update = { chart ->
                 // monta entradas
-                val entries = freqPerBin.map { (bin, freq) ->
+                val entries = ccdfPerBin.map { (bin, freq) ->
                     BarEntry(bin.toFloat(), freq.toFloat())
+                }
+                chart.setOnTouchListener { v, event ->
+                    when (event.actionMasked) {
+                        MotionEvent.ACTION_DOWN -> {
+                            (v.parent as? ViewGroup)?.requestDisallowInterceptTouchEvent(true)
+                        }
+                        MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                            (v.parent as? ViewGroup)?.requestDisallowInterceptTouchEvent(false)
+                            v.performClick()  // ✅ necessário para acessibilidade
+                        }
+                    }
+                    false  // deixa o gráfico continuar a tratar o toque
                 }
                 val dataSet = BarDataSet(entries, "Histogram").apply {
                     color = primaryColor
@@ -4698,6 +6244,23 @@ class MainActivity : ComponentActivity(),
                             barEntry.y.toInt().toString()
                     }
                 }
+                chart.setMinOffset(0f)
+
+                chart.axisLeft.apply {
+                    setDrawGridLines(false)
+                    setDrawAxisLine(false)
+                    setXOffset(0f)
+                }
+
+                chart.axisRight.isEnabled = false
+                chart.axisLeft.isEnabled = false
+
+                chart.setViewPortOffsets(
+                    /* left  */ 0f,
+                    /* top   */ 0f,
+                    /* right */ 0f,
+                    /* bottom*/ 0f
+                )
                 chart.data = BarData(dataSet)
 
                 // configura o eixo X
@@ -4708,27 +6271,30 @@ class MainActivity : ComponentActivity(),
                     position = XAxis.XAxisPosition.BOTTOM
                     isGranularityEnabled = true
                     granularity = 1f
-                    setLabelCount(nBins, true)
-                    axisMinimum = 0f
-                    axisMaximum = (nBins - 1).toFloat()
+                    setLabelCount(maxBins+1, true)
+                    axisMinimum = -0.5f
+                    axisMaximum = (maxBins - 1) + 0.5f
                     labelRotationAngle = 90f
                     textColor = primaryColor
-                    textSize = 8f
+                    textSize = 7f
+                    yOffset = 0f
                     valueFormatter = object : ValueFormatter() {
                         override fun getFormattedValue(value: Float): String {
-                            val bin = value.toInt()
-                            val end = (bin + 1) * effectiveBinSize - 1
-                            return "$end"
+                            if(value<0){
+                                return ""
+                            }
+                            else {
+                                val bin = value.toInt()
+                                val end = (bin + 1) * effectiveBinSize
+                                return "$end"
+                            }
                         }
                     }
                 }
 
-                chart.axisLeft.apply {
-                    setDrawGridLines(false)
-                    setDrawAxisLine(false)
-                    setXOffset(0f)
-                }
                 chart.axisRight.isEnabled = false
+                chart.isDragEnabled = true
+                chart.setVisibleXRangeMaximum(10f)
 
                 // listener de clique
                 chart.setOnChartValueSelectedListener(object : OnChartValueSelectedListener {
@@ -4796,27 +6362,1101 @@ class MainActivity : ComponentActivity(),
 
 
 
-
     @Composable
     fun AttemptsBarChart(throwRecords: List<ThrowRecord>) {
         val primaryColor = MaterialTheme.colors.primary.toArgb()
 
-        // os 5 melhores índices para mostrar label
-        val bestIndices = remember(throwRecords) {
-            throwRecords.mapIndexed { idx, rec -> idx to rec.count }
-                .sortedByDescending { it.second }
-                .take(1)
-                .map { it.first }
-                .toSet()
-        }
+        val maxIndex = throwRecords
+            .mapIndexed { idx, rec -> idx to rec.count }
+            .maxByOrNull { it.second }
+            ?.first ?: 0
 
-        // formatador de valor (só mostra se for top5)
-        val intValueFormatter = object : ValueFormatter() {
+        val lastIndex = throwRecords.lastIndex
+        val totalEntries = throwRecords.size
+        var isZoomed by remember { mutableStateOf(false) }
+
+        AndroidView(
+            factory = { ctx ->
+                CombinedChart(ctx).apply {
+                    description.isEnabled = false
+                    setDrawValueAboveBar(true)
+                    axisRight.isEnabled = false
+                    legend.isEnabled = false
+                    setScaleEnabled(false)
+                    setPinchZoom(false)
+                    setDoubleTapToZoomEnabled(false)
+                    isDragEnabled = false
+                    setHighlightPerTapEnabled(false)
+                    setHighlightPerDragEnabled(false)
+                }
+            },
+            update = { chart ->
+
+                val labelFormatter = object : ValueFormatter() {
+                    override fun getBarLabel(barEntry: BarEntry?): String {
+                        val idx = barEntry?.x?.toInt() ?: return ""
+                        return if (isZoomed || idx == maxIndex) {
+                            barEntry.y.toInt().toString()
+                        } else {
+                            ""
+                        }
+                    }
+                }
+
+                val entries = throwRecords.mapIndexed { i, rec ->
+                    BarEntry(i.toFloat(), rec.count.toFloat())
+                }
+
+                val barDataSet = BarDataSet(entries, "Throws").apply {
+                    color = primaryColor
+                    valueTextColor = primaryColor
+                    valueTextSize = 12f
+                    valueFormatter = labelFormatter
+                }
+
+                val progression = throwRecords.map { it.count.toFloat() }
+                    .runningFoldIndexed(0f) { index, acc, value ->
+                        if (index == 0) value else ((acc * index) + value) / (index + 1)
+                    }
+                    .drop(1)
+
+                val lineEntries = progression.mapIndexed { i, avg -> Entry(i.toFloat(), avg) }
+
+                val lineDataSet = LineDataSet(lineEntries, "avg accu").apply {
+                    color = AndroidColor.rgb(255, 165, 0)
+                    lineWidth = 2f
+                    setDrawCircles(false)
+                    setDrawValues(false)
+                    mode = LineDataSet.Mode.LINEAR
+                }
+
+                val combinedData = CombinedData().apply {
+                    setData(BarData(barDataSet))
+                    setData(LineData(lineDataSet))
+                }
+
+                chart.data = combinedData
+                chart.isDragEnabled = isZoomed
+                chart.setMinOffset(0f)
+                chart.xAxis.apply {
+                    setDrawGridLines(false)
+                    setDrawAxisLine(false)
+                    isGranularityEnabled = true
+                    granularity = 1f
+                    axisMinimum = -1f
+                    axisMaximum = (lastIndex) + 1f
+                    position = XAxis.XAxisPosition.BOTTOM
+                    labelRotationAngle = 90f
+                    textColor = primaryColor
+                    textSize = 8f
+                    yOffset = 2f
+                    valueFormatter = object : ValueFormatter() {
+                        override fun getFormattedValue(value: Float): String {
+                            val idx = value.roundToInt() + 1
+                            return if (idx > 0 && idx < lastIndex + 2) "$idx" else ""
+                        }
+                    }
+                }
+                chart.isDragEnabled = true
+
+                val maxY = throwRecords.maxOfOrNull { it.count }?.toFloat() ?: 0f
+                val stepOptions = listOf(1f, 2f, 5f, 10f, 20f, 50f, 100f, 200f)
+                val chosenStep = stepOptions.firstOrNull { step ->
+                    (ceil(maxY / step).toInt() + 1) <= 5
+                } ?: stepOptions.last()
+                val axisMax = ceil(maxY / chosenStep).toInt() * chosenStep
+                val labelCount = (axisMax / chosenStep).toInt() + 1
+                val acumuladaFinal = throwRecords.map { it.count }
+                    .runningFoldIndexed(0f) { idx, acc, valor ->
+                        if (idx == 0) valor.toFloat()
+                        else ((acc * idx) + valor) / (idx + 1)
+                    }.last()
+
+                chart.axisLeft.apply {
+                    axisMinimum = 0f
+                    axisMaximum = axisMax
+                    granularity = chosenStep
+                    setLabelCount(labelCount, true)
+                    setDrawGridLines(true)
+                    gridColor = AndroidColor.GRAY
+                    textColor = primaryColor
+                    textSize = 8f
+                    setDrawAxisLine(false)
+                    val mediaLine = LimitLine(acumuladaFinal, "").apply {
+                        lineColor = AndroidColor.rgb(255, 165, 0)
+                        lineWidth = 0.5f
+                        textColor = AndroidColor.rgb(255, 165, 0)
+                        textSize = 9f
+                        enableDashedLine(10f, 10f, 0f)
+                        labelPosition = LimitLine.LimitLabelPosition.LEFT_TOP
+                    }
+                    removeAllLimitLines()
+                    addLimitLine(mediaLine)
+                }
+
+                chart.setVisibleXRangeMaximum(1000f)
+                chart.setMaxVisibleValueCount(1000)
+
+                val gestureDetector = GestureDetector(chart.context, object : GestureDetector.SimpleOnGestureListener() {
+                    override fun onDoubleTap(e: MotionEvent): Boolean {
+                        isZoomed = !isZoomed
+                        if (isZoomed) {
+                            chart.setVisibleXRangeMaximum(5f)
+                            chart.moveViewToX((totalEntries - 5).coerceAtLeast(0).toFloat())
+                        } else {
+                            chart.fitScreen()
+                        }
+                        chart.invalidate()
+                        return true
+                    }
+                })
+
+                chart.setOnTouchListener { v, event ->
+                    // ✅ Sempre processa o gestureDetector para apanhar double tap
+                    gestureDetector.onTouchEvent(event)
+
+                    if (isZoomed) {
+                        // Só no zoom in impede que o parent intercepte
+                        when (event.actionMasked) {
+                            MotionEvent.ACTION_DOWN -> {
+                                (v.parent as? ViewGroup)?.requestDisallowInterceptTouchEvent(true)
+                            }
+                            MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                                (v.parent as? ViewGroup)?.requestDisallowInterceptTouchEvent(false)
+                                v.performClick()
+                            }
+                        }
+                    } else {
+                        // Zoom out -> permite que o parent intercepte arrastos
+                        (v.parent as? ViewGroup)?.requestDisallowInterceptTouchEvent(false)
+                    }
+                    false // não consumir totalmente, deixar seguir
+                }
+
+
+                chart.invalidate()
+            },
+            modifier = Modifier
+                .fillMaxWidth()
+                .fillMaxHeight(0.8f)
+
+        )
+    }
+
+    @Composable
+    fun AttemptsDurationBarChart(throwRecords: List<ThrowRecord>) {
+        val primaryColor = MaterialTheme.colors.primary.toArgb()
+
+        val maxIndex = throwRecords
+            .mapIndexed { idx, rec -> idx to rec.durationSeconds }
+            .maxByOrNull { it.second }
+            ?.first ?: 0
+
+        val lastIndex = throwRecords.lastIndex
+        val totalEntries = throwRecords.size
+        var isZoomed by remember { mutableStateOf(false) }
+
+        AndroidView(
+            factory = { ctx ->
+                CombinedChart(ctx).apply {
+                    description.isEnabled = false
+                    setDrawValueAboveBar(true)
+                    axisRight.isEnabled = false
+                    legend.isEnabled = false
+                    setScaleEnabled(false)
+                    setPinchZoom(false)
+                    setDoubleTapToZoomEnabled(false)
+                    isDragEnabled = false
+                    setHighlightPerTapEnabled(false)
+                    setHighlightPerDragEnabled(false)
+                }
+            },
+            update = { chart ->
+
+                val labelFormatter = object : ValueFormatter() {
+                    override fun getBarLabel(barEntry: BarEntry?): String {
+                        val idx = barEntry?.x?.toInt() ?: return ""
+                        return if (isZoomed || idx == maxIndex) {
+                            val value = barEntry.y
+                            if (value >= 100f) {
+                                "%.0f".format(value)
+                            } else {
+                                "%.1f".format(value)
+                            }
+                        } else {
+                            ""
+                        }
+                    }
+                }
+
+                val entries = throwRecords.mapIndexed { i, rec ->
+                    BarEntry(i.toFloat(), rec.durationSeconds.toFloat())
+                }
+
+                val barDataSet = BarDataSet(entries, "Duration (s)").apply {
+                    color = primaryColor
+                    valueTextColor = primaryColor
+                    valueTextSize = 12f
+                    valueFormatter = labelFormatter
+                }
+
+                val progression = throwRecords.map { it.durationSeconds.toFloat() }
+                    .runningFoldIndexed(0f) { index, acc, value ->
+                        if (index == 0) value else ((acc * index) + value) / (index + 1)
+                    }
+                    .drop(1)
+
+                val lineEntries = progression.mapIndexed { i, avg -> Entry(i.toFloat(), avg) }
+
+                val lineDataSet = LineDataSet(lineEntries, "avg dur").apply {
+                    color = AndroidColor.rgb(255, 165, 0)
+                    lineWidth = 2f
+                    setDrawCircles(false)
+                    setDrawValues(false)
+                    mode = LineDataSet.Mode.LINEAR
+                }
+
+                val combinedData = CombinedData().apply {
+                    setData(BarData(barDataSet))
+                    setData(LineData(lineDataSet))
+                }
+
+                chart.data = combinedData
+                chart.isDragEnabled = isZoomed
+                chart.setMinOffset(0f)
+                chart.xAxis.apply {
+                    setDrawGridLines(false)
+                    setDrawAxisLine(false)
+                    isGranularityEnabled = true
+                    granularity = 1f
+                    axisMinimum = -1f
+                    axisMaximum = (lastIndex) + 1f
+                    position = XAxis.XAxisPosition.BOTTOM
+                    labelRotationAngle = 90f
+                    textColor = primaryColor
+                    textSize = 8f
+                    yOffset = 2f
+                    valueFormatter = object : ValueFormatter() {
+                        override fun getFormattedValue(value: Float): String {
+                            val idx = value.roundToInt() + 1
+                            return if (idx > 0 && idx < lastIndex + 2) "$idx" else ""
+                        }
+                    }
+                }
+                chart.isDragEnabled = true
+
+                // 🔥 Usa durationSeconds para calcular o max Y
+                val maxY = throwRecords.maxOfOrNull { it.durationSeconds }?.toFloat() ?: 0f
+                val stepOptions = listOf(1f, 2f, 5f, 10f, 20f, 50f, 100f, 200f)
+                val chosenStep = stepOptions.firstOrNull { step ->
+                    (ceil(maxY / step).toInt() + 1) <= 5
+                } ?: stepOptions.last()
+                val axisMax = ceil(maxY / chosenStep).toInt() * chosenStep
+                val labelCount = (axisMax / chosenStep).toInt() + 1
+
+                // 🔥 Calcula média acumulada com durationSeconds
+                val acumuladaFinal = throwRecords.map { it.durationSeconds }
+                    .runningFoldIndexed(0f) { idx, acc, valor ->
+                        if (idx == 0) valor.toFloat()
+                        else ((acc * idx) + valor) / (idx + 1)
+                    }.last()
+
+                chart.axisLeft.apply {
+                    axisMinimum = 0f
+                    axisMaximum = axisMax
+                    granularity = chosenStep
+                    setLabelCount(labelCount, true)
+                    setDrawGridLines(true)
+                    gridColor = AndroidColor.GRAY
+                    textColor = primaryColor
+                    textSize = 8f
+                    setDrawAxisLine(false)
+                    val mediaLine = LimitLine(acumuladaFinal, "").apply {
+                        lineColor = AndroidColor.rgb(255, 165, 0)
+                        lineWidth = 0.5f
+                        textColor = AndroidColor.rgb(255, 165, 0)
+                        textSize = 9f
+                        enableDashedLine(10f, 10f, 0f)
+                        labelPosition = LimitLine.LimitLabelPosition.LEFT_TOP
+                    }
+                    removeAllLimitLines()
+                    addLimitLine(mediaLine)
+                }
+
+                chart.setVisibleXRangeMaximum(1000f)
+                chart.setMaxVisibleValueCount(1000)
+
+                val gestureDetector = GestureDetector(chart.context, object : GestureDetector.SimpleOnGestureListener() {
+                    override fun onDoubleTap(e: MotionEvent): Boolean {
+                        isZoomed = !isZoomed
+                        if (isZoomed) {
+                            chart.setVisibleXRangeMaximum(5f)
+                            chart.moveViewToX((totalEntries - 5).coerceAtLeast(0).toFloat())
+                        } else {
+                            chart.fitScreen()
+                        }
+                        chart.invalidate()
+                        return true
+                    }
+                })
+
+                chart.setOnTouchListener { v, event ->
+                    gestureDetector.onTouchEvent(event)
+
+                    if (isZoomed) {
+                        when (event.actionMasked) {
+                            MotionEvent.ACTION_DOWN -> {
+                                (v.parent as? ViewGroup)?.requestDisallowInterceptTouchEvent(true)
+                            }
+                            MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                                (v.parent as? ViewGroup)?.requestDisallowInterceptTouchEvent(false)
+                                v.performClick()
+                            }
+                        }
+                    } else {
+                        (v.parent as? ViewGroup)?.requestDisallowInterceptTouchEvent(false)
+                    }
+                    false
+                }
+
+                chart.invalidate()
+            },
+            modifier = Modifier
+                .fillMaxWidth()
+                .fillMaxHeight(0.8f)
+        )
+    }
+
+
+    @Composable
+    fun AttemptsTpsBarChart(throwRecords: List<ThrowRecord>) {
+        val primaryColor = MaterialTheme.colors.primary.toArgb()
+
+        val maxIndex = throwRecords
+            .mapIndexed { idx, rec -> idx to rec.frequency }
+            .maxByOrNull { it.second }
+            ?.first ?: 0
+
+        val lastIndex = throwRecords.lastIndex
+        val totalEntries = throwRecords.size
+        var isZoomed by remember { mutableStateOf(false) }
+
+        AndroidView(
+            factory = { ctx ->
+                CombinedChart(ctx).apply {
+                    description.isEnabled = false
+                    setDrawValueAboveBar(true)
+                    axisRight.isEnabled = false
+                    legend.isEnabled = false
+                    setScaleEnabled(false)
+                    setPinchZoom(false)
+                    setDoubleTapToZoomEnabled(false)
+                    isDragEnabled = false
+                    setHighlightPerTapEnabled(false)
+                    setHighlightPerDragEnabled(false)
+                }
+            },
+            update = { chart ->
+
+                val labelFormatter = object : ValueFormatter() {
+                    override fun getBarLabel(barEntry: BarEntry?): String {
+                        val idx = barEntry?.x?.toInt() ?: return ""
+                        return if (isZoomed || idx == maxIndex) {
+                            val value = barEntry.y
+                            "%.1f".format(value)
+                        } else {
+                            ""
+                        }
+                    }
+                }
+
+                val entries = throwRecords.mapIndexed { i, rec ->
+                    BarEntry(i.toFloat(), rec.frequency.toFloat())
+                }
+
+                val barDataSet = BarDataSet(entries, "Throws per second (tps)").apply {
+                    color = primaryColor
+                    valueTextColor = primaryColor
+                    valueTextSize = 12f
+                    valueFormatter = labelFormatter
+                }
+
+                val progression = throwRecords.map { it.frequency.toFloat() }
+                    .runningFoldIndexed(0f) { index, acc, value ->
+                        if (index == 0) value else ((acc * index) + value) / (index + 1)
+                    }
+                    .drop(1)
+
+                val lineEntries = progression.mapIndexed { i, avg -> Entry(i.toFloat(), avg) }
+
+                val lineDataSet = LineDataSet(lineEntries, "avg dur").apply {
+                    color = AndroidColor.rgb(255, 165, 0)
+                    lineWidth = 2f
+                    setDrawCircles(false)
+                    setDrawValues(false)
+                    mode = LineDataSet.Mode.LINEAR
+                }
+
+                val combinedData = CombinedData().apply {
+                    setData(BarData(barDataSet))
+                    setData(LineData(lineDataSet))
+                }
+
+                chart.data = combinedData
+                chart.isDragEnabled = isZoomed
+                chart.setMinOffset(0f)
+                chart.xAxis.apply {
+                    setDrawGridLines(false)
+                    setDrawAxisLine(false)
+                    isGranularityEnabled = true
+                    granularity = 1f
+                    axisMinimum = -1f
+                    axisMaximum = (lastIndex) + 1f
+                    position = XAxis.XAxisPosition.BOTTOM
+                    labelRotationAngle = 90f
+                    textColor = primaryColor
+                    textSize = 8f
+                    yOffset = 2f
+                    valueFormatter = object : ValueFormatter() {
+                        override fun getFormattedValue(value: Float): String {
+                            val idx = value.roundToInt() + 1
+                            return if (idx > 0 && idx < lastIndex + 2) "$idx" else ""
+                        }
+                    }
+                }
+                chart.isDragEnabled = true
+
+                val maxY = throwRecords.maxOfOrNull { it.frequency }?.toFloat() ?: 0f
+                val stepOptions = listOf(0.2f, 0.5f, 1f, 2f, 5f, 10f, 20f, 50f, 100f, 200f)
+                val chosenStep = stepOptions.firstOrNull { step ->
+                    (ceil(maxY / step).toInt() + 1) <= 5
+                } ?: stepOptions.last()
+                val axisMax = ceil(maxY / chosenStep).toInt() * chosenStep
+                val labelCount = (axisMax / chosenStep).toInt() + 1
+
+                // 🔥 Calcula média acumulada com durationSeconds
+                val acumuladaFinal = throwRecords.map { it.frequency }
+                    .runningFoldIndexed(0f) { idx, acc, valor ->
+                        if (idx == 0) valor.toFloat()
+                        else ((acc * idx) + valor) / (idx + 1)
+                    }.last()
+
+                chart.axisLeft.apply {
+                    axisMinimum = 0f
+                    axisMaximum = axisMax
+                    granularity = chosenStep
+                    setLabelCount(labelCount, true)
+                    setDrawGridLines(true)
+                    gridColor = AndroidColor.GRAY
+                    textColor = primaryColor
+                    textSize = 8f
+                    setDrawAxisLine(false)
+                    val mediaLine = LimitLine(acumuladaFinal, "").apply {
+                        lineColor = AndroidColor.rgb(255, 165, 0)
+                        lineWidth = 0.5f
+                        textColor = AndroidColor.rgb(255, 165, 0)
+                        textSize = 9f
+                        enableDashedLine(10f, 10f, 0f)
+                        labelPosition = LimitLine.LimitLabelPosition.LEFT_TOP
+                    }
+                    removeAllLimitLines()
+                    addLimitLine(mediaLine)
+                }
+
+                chart.setVisibleXRangeMaximum(1000f)
+                chart.setMaxVisibleValueCount(1000)
+
+                val gestureDetector = GestureDetector(chart.context, object : GestureDetector.SimpleOnGestureListener() {
+                    override fun onDoubleTap(e: MotionEvent): Boolean {
+                        isZoomed = !isZoomed
+                        if (isZoomed) {
+                            chart.setVisibleXRangeMaximum(5f)
+                            chart.moveViewToX((totalEntries - 5).coerceAtLeast(0).toFloat())
+                        } else {
+                            chart.fitScreen()
+                        }
+                        chart.invalidate()
+                        return true
+                    }
+                })
+
+                chart.setOnTouchListener { v, event ->
+                    gestureDetector.onTouchEvent(event)
+
+                    if (isZoomed) {
+                        when (event.actionMasked) {
+                            MotionEvent.ACTION_DOWN -> {
+                                (v.parent as? ViewGroup)?.requestDisallowInterceptTouchEvent(true)
+                            }
+                            MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                                (v.parent as? ViewGroup)?.requestDisallowInterceptTouchEvent(false)
+                                v.performClick()
+                            }
+                        }
+                    } else {
+                        (v.parent as? ViewGroup)?.requestDisallowInterceptTouchEvent(false)
+                    }
+                    false
+                }
+
+                chart.invalidate()
+            },
+            modifier = Modifier
+                .fillMaxWidth()
+                .fillMaxHeight(0.8f)
+        )
+    }
+
+    @Composable
+    fun AttemptsBarSortChart(throwRecords: List<ThrowRecord>) {
+        val primaryColor = MaterialTheme.colors.primary.toArgb()
+        val sortedRecords = throwRecords.sortedByDescending { it.count }
+
+        val maxIndex = sortedRecords
+            .mapIndexed { idx, rec -> idx to rec.count }
+            .maxByOrNull { it.second }
+            ?.first ?: 0
+
+        val lastIndex = throwRecords.lastIndex
+        val totalEntries = throwRecords.size
+        var isZoomed by remember { mutableStateOf(false) }
+
+        AndroidView(
+            factory = { ctx ->
+                CombinedChart(ctx).apply {
+                    description.isEnabled = false
+                    setDrawValueAboveBar(true)
+                    axisRight.isEnabled = false
+                    legend.isEnabled = false
+                    setScaleEnabled(false)
+                    setPinchZoom(false)
+                    setDoubleTapToZoomEnabled(false)
+                    isDragEnabled = false
+                    setHighlightPerTapEnabled(false)
+                    setHighlightPerDragEnabled(false)
+                }
+            },
+            update = { chart ->
+
+                val labelFormatter = object : ValueFormatter() {
+                    override fun getBarLabel(barEntry: BarEntry?): String {
+                        val idx = barEntry?.x?.toInt() ?: return ""
+                        return if (isZoomed || idx == maxIndex) {
+                            barEntry.y.toInt().toString()
+                        } else {
+                            ""
+                        }
+                    }
+                }
+
+                val entries = sortedRecords.mapIndexed { i, rec ->
+                    BarEntry(i.toFloat(), rec.count.toFloat())
+                }
+
+                val mean = sortedRecords.map { it.count }.average().toFloat()
+
+                val barColors = sortedRecords.map { rec ->
+                    if (rec.count >= mean)
+                        AndroidColor.rgb(255, 165, 0)
+                    else
+                        primaryColor
+                }
+
+                val barDataSet = BarDataSet(entries, "Throws").apply {
+                    colors = barColors
+                    valueTextColor = primaryColor
+                    valueTextSize = 12f
+                    valueFormatter = labelFormatter
+                }
+
+                val progression = sortedRecords.map { it.count.toFloat() }
+                    .runningFoldIndexed(0f) { index, acc, value ->
+                        if (index == 0) value else ((acc * index) + value) / (index + 1)
+                    }
+                    .drop(1)
+
+                val lineEntries = progression.mapIndexed { i, avg -> Entry(i.toFloat(), avg) }
+
+                val combinedData = CombinedData().apply {
+                    setData(BarData(barDataSet))
+                }
+
+                chart.data = combinedData
+                chart.isDragEnabled = isZoomed
+                chart.setMinOffset(0f)
+                chart.xAxis.apply {
+                    setDrawGridLines(false)
+                    setDrawAxisLine(false)
+                    isGranularityEnabled = true
+                    granularity = 1f
+                    axisMinimum = -1f
+                    axisMaximum = (lastIndex) + 1f
+                    position = XAxis.XAxisPosition.BOTTOM
+                    labelRotationAngle = 90f
+                    textColor = primaryColor
+                    textSize = 8f
+                    yOffset = 2f
+                    valueFormatter = object : ValueFormatter() {
+                        override fun getFormattedValue(value: Float): String {
+                            val idx = value.roundToInt() + 1
+                            return if (idx > 0 && idx < lastIndex + 2) "$idx" else ""
+                        }
+                    }
+                }
+                chart.isDragEnabled = true
+
+                val maxY = sortedRecords.maxOfOrNull { it.count }?.toFloat() ?: 0f
+                val stepOptions = listOf(1f, 2f, 5f, 10f, 20f, 50f, 100f, 200f)
+                val chosenStep = stepOptions.firstOrNull { step ->
+                    (ceil(maxY / step).toInt() + 1) <= 5
+                } ?: stepOptions.last()
+                val axisMax = ceil(maxY / chosenStep).toInt() * chosenStep
+                val labelCount = (axisMax / chosenStep).toInt() + 1
+                val acumuladaFinal = sortedRecords.map { it.count }
+                    .runningFoldIndexed(0f) { idx, acc, valor ->
+                        if (idx == 0) valor.toFloat()
+                        else ((acc * idx) + valor) / (idx + 1)
+                    }.last()
+
+                chart.axisLeft.apply {
+                    axisMinimum = 0f
+                    axisMaximum = axisMax
+                    granularity = chosenStep
+                    setLabelCount(labelCount, true)
+                    setDrawGridLines(true)
+                    gridColor = AndroidColor.GRAY
+                    textColor = primaryColor
+                    textSize = 8f
+                    setDrawAxisLine(false)
+                    val mediaLine = LimitLine(acumuladaFinal, "").apply {
+                        lineColor = AndroidColor.rgb(255, 165, 0)
+                        lineWidth = 0.5f
+                        textColor = AndroidColor.rgb(255, 165, 0)
+                        textSize = 9f
+                        enableDashedLine(10f, 10f, 0f)
+                        labelPosition = LimitLine.LimitLabelPosition.LEFT_TOP
+                    }
+                    removeAllLimitLines()
+                    addLimitLine(mediaLine)
+                }
+
+                chart.setVisibleXRangeMaximum(1000f)
+                chart.setMaxVisibleValueCount(1000)
+
+                val gestureDetector = GestureDetector(chart.context, object : GestureDetector.SimpleOnGestureListener() {
+                    override fun onDoubleTap(e: MotionEvent): Boolean {
+                        isZoomed = !isZoomed
+                        if (isZoomed) {
+                            chart.setVisibleXRangeMaximum(5f)
+                            chart.moveViewToX((0).coerceAtLeast(0).toFloat())
+                        } else {
+                            chart.fitScreen()
+                        }
+                        chart.invalidate()
+                        return true
+                    }
+                })
+
+                chart.setOnTouchListener { v, event ->
+                    // ✅ Sempre processa o gestureDetector para apanhar double tap
+                    gestureDetector.onTouchEvent(event)
+
+                    if (isZoomed) {
+                        // Só no zoom in impede que o parent intercepte
+                        when (event.actionMasked) {
+                            MotionEvent.ACTION_DOWN -> {
+                                (v.parent as? ViewGroup)?.requestDisallowInterceptTouchEvent(true)
+                            }
+                            MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                                (v.parent as? ViewGroup)?.requestDisallowInterceptTouchEvent(false)
+                                v.performClick()
+                            }
+                        }
+                    } else {
+                        // Zoom out -> permite que o parent intercepte arrastos
+                        (v.parent as? ViewGroup)?.requestDisallowInterceptTouchEvent(false)
+                    }
+                    false // não consumir totalmente, deixar seguir
+                }
+
+
+                chart.invalidate()
+            },
+            modifier = Modifier
+                .fillMaxWidth()
+                .fillMaxHeight(0.8f)
+        )
+    }
+
+    @Composable
+    fun AttemptsDurationBarSortChart(throwRecords: List<ThrowRecord>) {
+        val primaryColor = MaterialTheme.colors.primary.toArgb()
+        val sortedRecords = throwRecords.sortedByDescending { it.durationSeconds }
+
+        val maxIndex = sortedRecords
+            .mapIndexed { idx, rec -> idx to rec.durationSeconds }
+            .maxByOrNull { it.second }
+            ?.first ?: 0
+
+        val lastIndex = throwRecords.lastIndex
+        val totalEntries = throwRecords.size
+        var isZoomed by remember { mutableStateOf(false) }
+
+        AndroidView(
+            factory = { ctx ->
+                CombinedChart(ctx).apply {
+                    description.isEnabled = false
+                    setDrawValueAboveBar(true)
+                    axisRight.isEnabled = false
+                    legend.isEnabled = false
+                    setScaleEnabled(false)
+                    setPinchZoom(false)
+                    setDoubleTapToZoomEnabled(false)
+                    isDragEnabled = false
+                    setHighlightPerTapEnabled(false)
+                    setHighlightPerDragEnabled(false)
+                }
+            },
+            update = { chart ->
+
+                val labelFormatter = object : ValueFormatter() {
+                    override fun getBarLabel(barEntry: BarEntry?): String {
+                        val idx = barEntry?.x?.toInt() ?: return ""
+                        return if (isZoomed || idx == maxIndex) {
+                            val value = barEntry.y
+                            if (value >= 100f) {
+                                "%.0f".format(value)
+                            } else {
+                                "%.1f".format(value)
+                            }
+                        } else {
+                            ""
+                        }
+                    }
+                }
+
+                val entries = sortedRecords.mapIndexed { i, rec ->
+                    BarEntry(i.toFloat(), rec.durationSeconds.toFloat())
+                }
+
+                val mean = sortedRecords.map { it.durationSeconds }.average().toFloat()
+
+                val barColors = sortedRecords.map { rec ->
+                    if (rec.durationSeconds >= mean)
+                        AndroidColor.rgb(255, 165, 0) // laranja
+                    else
+                        primaryColor               // cor primária
+                }
+
+                val barDataSet = BarDataSet(entries, "Duration").apply {
+                    colors = barColors
+                    valueTextColor = primaryColor
+                    valueTextSize = 12f
+                    valueFormatter = labelFormatter
+                }
+
+
+                val combinedData = CombinedData().apply {
+                    setData(BarData(barDataSet))
+                }
+
+                chart.data = combinedData
+                chart.isDragEnabled = isZoomed
+                chart.setMinOffset(0f)
+
+                chart.xAxis.apply {
+                    setDrawGridLines(false)
+                    setDrawAxisLine(false)
+                    isGranularityEnabled = true
+                    granularity = 1f
+                    axisMinimum = -1f
+                    axisMaximum = (lastIndex) + 1f
+                    position = XAxis.XAxisPosition.BOTTOM
+                    labelRotationAngle = 90f
+                    textColor = primaryColor
+                    textSize = 8f
+                    yOffset = 2f
+                    valueFormatter = object : ValueFormatter() {
+                        override fun getFormattedValue(value: Float): String {
+                            val idx = value.roundToInt() + 1
+                            return if (idx > 0 && idx < lastIndex + 2) "$idx" else ""
+                        }
+                    }
+                }
+
+                val maxY = sortedRecords.maxOfOrNull { it.durationSeconds }?.toFloat() ?: 0f
+                val stepOptions = listOf(1f, 2f, 5f, 10f, 20f, 50f, 100f, 200f)
+                val chosenStep = stepOptions.firstOrNull { step ->
+                    (ceil(maxY / step).toInt() + 1) <= 5
+                } ?: stepOptions.last()
+                val axisMax = ceil(maxY / chosenStep).toInt() * chosenStep
+                val labelCount = (axisMax / chosenStep).toInt() + 1
+
+                val acumuladaFinal = sortedRecords.map { it.durationSeconds }
+                    .runningFoldIndexed(0f) { idx, acc, valor ->
+                        if (idx == 0) valor.toFloat()
+                        else ((acc * idx) + valor) / (idx + 1)
+                    }.last()
+
+                chart.axisLeft.apply {
+                    axisMinimum = 0f
+                    axisMaximum = axisMax
+                    granularity = chosenStep
+                    setLabelCount(labelCount, true)
+                    setDrawGridLines(true)
+                    gridColor = AndroidColor.GRAY
+                    textColor = primaryColor
+                    textSize = 8f
+                    setDrawAxisLine(false)
+                    val mediaLine = LimitLine(acumuladaFinal, "").apply {
+                        lineColor = AndroidColor.rgb(255, 165, 0)
+                        lineWidth = 0.5f
+                        textColor = AndroidColor.rgb(255, 165, 0)
+                        textSize = 9f
+                        enableDashedLine(10f, 10f, 0f)
+                        labelPosition = LimitLine.LimitLabelPosition.LEFT_TOP
+                    }
+                    removeAllLimitLines()
+                    addLimitLine(mediaLine)
+                }
+
+                chart.setVisibleXRangeMaximum(1000f)
+                chart.setMaxVisibleValueCount(1000)
+
+                val gestureDetector = GestureDetector(chart.context, object : GestureDetector.SimpleOnGestureListener() {
+                    override fun onDoubleTap(e: MotionEvent): Boolean {
+                        isZoomed = !isZoomed
+                        if (isZoomed) {
+                            chart.setVisibleXRangeMaximum(5f)
+                            chart.moveViewToX(0f)
+                        } else {
+                            chart.fitScreen()
+                        }
+                        chart.invalidate()
+                        return true
+                    }
+                })
+
+                chart.setOnTouchListener { v, event ->
+                    gestureDetector.onTouchEvent(event)
+
+                    if (isZoomed) {
+                        when (event.actionMasked) {
+                            MotionEvent.ACTION_DOWN -> {
+                                (v.parent as? ViewGroup)?.requestDisallowInterceptTouchEvent(true)
+                            }
+                            MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                                (v.parent as? ViewGroup)?.requestDisallowInterceptTouchEvent(false)
+                                v.performClick()
+                            }
+                        }
+                    } else {
+                        (v.parent as? ViewGroup)?.requestDisallowInterceptTouchEvent(false)
+                    }
+                    false
+                }
+
+                chart.invalidate()
+            },
+            modifier = Modifier
+                .fillMaxWidth()
+                .fillMaxHeight(0.8f)
+        )
+    }
+
+    @Composable
+    fun AttemptsTpsBarSortChart(throwRecords: List<ThrowRecord>) {
+        val primaryColor = MaterialTheme.colors.primary.toArgb()
+        val sortedRecords = throwRecords.sortedByDescending { it.frequency }
+
+        val maxIndex = sortedRecords
+            .mapIndexed { idx, rec -> idx to rec.frequency }
+            .maxByOrNull { it.second }
+            ?.first ?: 0
+
+        val lastIndex = throwRecords.lastIndex
+        val totalEntries = throwRecords.size
+        var isZoomed by remember { mutableStateOf(false) }
+
+        AndroidView(
+            factory = { ctx ->
+                CombinedChart(ctx).apply {
+                    description.isEnabled = false
+                    setDrawValueAboveBar(true)
+                    axisRight.isEnabled = false
+                    legend.isEnabled = false
+                    setScaleEnabled(false)
+                    setPinchZoom(false)
+                    setDoubleTapToZoomEnabled(false)
+                    isDragEnabled = false
+                    setHighlightPerTapEnabled(false)
+                    setHighlightPerDragEnabled(false)
+                }
+            },
+            update = { chart ->
+
+                val labelFormatter = object : ValueFormatter() {
+                    override fun getBarLabel(barEntry: BarEntry?): String {
+                        val idx = barEntry?.x?.toInt() ?: return ""
+                        return if (isZoomed || idx == maxIndex) {
+                            val value = barEntry.y
+                            "%.1f".format(value)
+                        } else {
+                            ""
+                        }
+                    }
+                }
+
+                val entries = sortedRecords.mapIndexed { i, rec ->
+                    BarEntry(i.toFloat(), rec.frequency.toFloat())
+                }
+
+                val mean = sortedRecords.map { it.frequency }.average().toFloat()
+
+                val barColors = sortedRecords.map { rec ->
+                    if (rec.frequency >= mean)
+                        AndroidColor.rgb(255, 165, 0) // laranja
+                    else
+                        primaryColor               // cor primária
+                }
+
+                val barDataSet = BarDataSet(entries, "TPS").apply {
+                    colors = barColors
+                    valueTextColor = primaryColor
+                    valueTextSize = 12f
+                    valueFormatter = labelFormatter
+                }
+
+
+                val combinedData = CombinedData().apply {
+                    setData(BarData(barDataSet))
+                }
+
+                chart.data = combinedData
+                chart.isDragEnabled = isZoomed
+                chart.setMinOffset(0f)
+
+                chart.xAxis.apply {
+                    setDrawGridLines(false)
+                    setDrawAxisLine(false)
+                    isGranularityEnabled = true
+                    granularity = 1f
+                    axisMinimum = -1f
+                    axisMaximum = (lastIndex) + 1f
+                    position = XAxis.XAxisPosition.BOTTOM
+                    labelRotationAngle = 90f
+                    textColor = primaryColor
+                    textSize = 8f
+                    yOffset = 2f
+                    valueFormatter = object : ValueFormatter() {
+                        override fun getFormattedValue(value: Float): String {
+                            val idx = value.roundToInt() + 1
+                            return if (idx > 0 && idx < lastIndex + 2) "$idx" else ""
+                        }
+                    }
+                }
+
+                val maxY = sortedRecords.maxOfOrNull { it.frequency }?.toFloat() ?: 0f
+                val stepOptions = listOf(1f, 2f, 5f, 10f, 20f, 50f, 100f, 200f)
+                val chosenStep = stepOptions.firstOrNull { step ->
+                    (ceil(maxY / step).toInt() + 1) <= 5
+                } ?: stepOptions.last()
+                val axisMax = ceil(maxY / chosenStep).toInt() * chosenStep
+                val labelCount = (axisMax / chosenStep).toInt() + 1
+
+                val acumuladaFinal = sortedRecords.map { it.frequency }
+                    .runningFoldIndexed(0f) { idx, acc, valor ->
+                        if (idx == 0) valor.toFloat()
+                        else ((acc * idx) + valor) / (idx + 1)
+                    }.last()
+
+                chart.axisLeft.apply {
+                    axisMinimum = 0f
+                    axisMaximum = axisMax
+                    granularity = chosenStep
+                    setLabelCount(labelCount, true)
+                    setDrawGridLines(true)
+                    gridColor = AndroidColor.GRAY
+                    textColor = primaryColor
+                    textSize = 8f
+                    setDrawAxisLine(false)
+                    val mediaLine = LimitLine(acumuladaFinal, "").apply {
+                        lineColor = AndroidColor.rgb(255, 165, 0)
+                        lineWidth = 0.5f
+                        textColor = AndroidColor.rgb(255, 165, 0)
+                        textSize = 9f
+                        enableDashedLine(10f, 10f, 0f)
+                        labelPosition = LimitLine.LimitLabelPosition.LEFT_TOP
+                    }
+                    removeAllLimitLines()
+                    addLimitLine(mediaLine)
+                }
+
+                chart.setVisibleXRangeMaximum(1000f)
+                chart.setMaxVisibleValueCount(1000)
+
+                val gestureDetector = GestureDetector(chart.context, object : GestureDetector.SimpleOnGestureListener() {
+                    override fun onDoubleTap(e: MotionEvent): Boolean {
+                        isZoomed = !isZoomed
+                        if (isZoomed) {
+                            chart.setVisibleXRangeMaximum(5f)
+                            chart.moveViewToX(0f)
+                        } else {
+                            chart.fitScreen()
+                        }
+                        chart.invalidate()
+                        return true
+                    }
+                })
+
+                chart.setOnTouchListener { v, event ->
+                    gestureDetector.onTouchEvent(event)
+
+                    if (isZoomed) {
+                        when (event.actionMasked) {
+                            MotionEvent.ACTION_DOWN -> {
+                                (v.parent as? ViewGroup)?.requestDisallowInterceptTouchEvent(true)
+                            }
+                            MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                                (v.parent as? ViewGroup)?.requestDisallowInterceptTouchEvent(false)
+                                v.performClick()
+                            }
+                        }
+                    } else {
+                        (v.parent as? ViewGroup)?.requestDisallowInterceptTouchEvent(false)
+                    }
+                    false
+                }
+
+                chart.invalidate()
+            },
+            modifier = Modifier
+                .fillMaxWidth()
+                .fillMaxHeight(0.8f)
+        )
+    }
+
+
+    /*@Composable
+    fun AttemptsBarChart(throwRecords: List<ThrowRecord>) {
+        val primaryColor = MaterialTheme.colors.primary.toArgb()
+
+        val maxIndex = throwRecords
+            .mapIndexed { idx, rec -> idx to rec.count }
+            .maxByOrNull { it.second }
+            ?.first ?: 0
+
+        val lastIndex = throwRecords.lastIndex
+
+        val labeledIndices = setOf(maxIndex, lastIndex)
+
+        val labelFormatter = object : ValueFormatter() {
             override fun getBarLabel(barEntry: BarEntry?): String {
                 val idx = barEntry?.x?.toInt() ?: return ""
-                return if (idx in bestIndices) barEntry.y.toInt().toString() else ""
+                return if (idx in labeledIndices) barEntry.y.toInt().toString() else ""
             }
         }
+        var selectedIndex by remember { mutableStateOf<Int?>(null) }
 
         AndroidView(
             factory = { ctx ->
@@ -4842,9 +7482,17 @@ class MainActivity : ComponentActivity(),
                     color = primaryColor
                     valueTextColor = primaryColor
                     valueTextSize = 8f
-                    valueFormatter = intValueFormatter
+                    valueFormatter = labelFormatter
                 }
                 chart.data = BarData(dataSet)
+
+                // listener de clique
+                chart.setOnChartValueSelectedListener(object : OnChartValueSelectedListener {
+                    override fun onValueSelected(e: Entry?, h: Highlight?) {
+                        selectedIndex = e?.x?.toInt()
+                    }
+                    override fun onNothingSelected() { }
+                })
 
                 // 2) eixo X (sem grid vertical)
                 chart.xAxis.apply {
@@ -4853,6 +7501,15 @@ class MainActivity : ComponentActivity(),
                     isGranularityEnabled = true
                     granularity = 1f
                     position = XAxis.XAxisPosition.BOTTOM
+                    labelRotationAngle = 90f
+                    textColor = primaryColor
+                    textSize = 8f
+                    valueFormatter = object : ValueFormatter() {
+                        override fun getFormattedValue(value: Float): String {
+                            val runs = value.toInt()+1
+                            return "$runs"
+                        }
+                    }
                 }
 
                 // 3) Y dinâmico: escolhe step para ≤10 linhas
@@ -4880,6 +7537,17 @@ class MainActivity : ComponentActivity(),
                     textColor = primaryColor
                     textSize = 8f
                     setXOffset(0f)
+                    val media = throwRecords.map { it.count }.average().toFloat()
+                    val mediaLine = LimitLine(media, "Média").apply {
+                        lineColor = AndroidColor.RED
+                        lineWidth = 1.5f
+                        textColor = AndroidColor.RED
+                        textSize = 10f
+                        enableDashedLine(10f, 10f, 0f)
+                        labelPosition = LimitLine.LimitLabelPosition.RIGHT_TOP
+                    }
+                    removeAllLimitLines()
+                    addLimitLine(mediaLine)
                 }
 
 
@@ -4894,7 +7562,34 @@ class MainActivity : ComponentActivity(),
                 .height(100.dp)
 
         )
-    }
+        // 9) mostra Dialog ao clicar fora de Compose “inline”
+        selectedIndex?.let { idx ->
+            val value = throwRecords.getOrNull(idx)?.count ?: 0
+            Dialog(
+                onDismissRequest = { selectedIndex = null },
+                properties = DialogProperties(
+                    dismissOnBackPress = true,
+                    dismissOnClickOutside = true
+                )
+            ) {
+                Surface(
+                    shape = RoundedCornerShape(16.dp),
+                    color = Color(0xCC363F4C),
+                    elevation = 16.dp,
+                    modifier = Modifier.size(width = 60.dp, height = 38.dp)
+                ) {
+                    Column(modifier = Modifier.padding(12.dp)) {
+                        Text(
+                            text = "$value",
+                            fontSize = 12.sp,
+                            modifier = Modifier.fillMaxWidth(),
+                            textAlign = TextAlign.Center
+                        )
+                    }
+                }
+            }
+        }
+    }*/
 
 
     @Composable
@@ -5100,7 +7795,7 @@ class MainActivity : ComponentActivity(),
             .flatMap { it.throwRecords.map { tr -> tr.count.toFloat() } }
         if (allCounts.isEmpty()) {
             Text(
-                text = "Sem lançamentos para mostrar",
+                text = "no data",
                 color = MaterialTheme.colors.primary,
                 modifier = Modifier
                     .fillMaxWidth()
@@ -5558,8 +8253,11 @@ class MainActivity : ComponentActivity(),
                 }
 
             }*/
-
-            accelerometerReading = "${"%.1f".format(minZ)}:${"%.1f".format(maxZ)}"
+            val diffMs = lastAnnouncedTime.let { currentTime - it } ?: 0L
+            val durationMs = seriesStartTime?.let { currentTime - it } ?: 0L
+            val durationSec = ((durationMs) / 1000f)
+            //accelerometerReading = "Tosses: ${flankCount}\nTime: ${"%.1f".format(durationSec)}"//"${"%.1f".format(minZ)}:${"%.1f".format(maxZ)}"
+            accelerometerReading = "${flankCount}"//"${"%.1f".format(minZ)}:${"%.1f".format(maxZ)}"
 
 
 
@@ -5567,10 +8265,10 @@ class MainActivity : ComponentActivity(),
             if (flankCount > 0){
 
 
-                if (swapCount == 0){ //time
-                    val diffMs = lastAnnouncedTime.let { currentTime - it } ?: 0L
+                if (swapCount == 1){ //time
+                    /*val diffMs = lastAnnouncedTime.let { currentTime - it } ?: 0L
                     val durationMs = seriesStartTime?.let { currentTime - it } ?: 0L
-                    val durationSec = ((durationMs) / 1000f)
+                    val durationSec = ((durationMs) / 1000f)*/
                     if (durationSec>1 && durationSec.toInt() % timeInterval == 0 && diffMs>1000
                     ){
                         lastAnnouncedTime = currentTime
@@ -5582,7 +8280,7 @@ class MainActivity : ComponentActivity(),
                         }
                     }
                 }
-                if (swapCount == 1){ //throws
+                if (swapCount == 0){ //throws
                     if (flankCount % throwsInterval == 0 && flankCount != lastAnnouncedCount
                     ) {
                         lastAnnouncedCount = flankCount
@@ -5853,10 +8551,10 @@ class MainActivity : ComponentActivity(),
         // agora reseta o buffer para a próxima série
         sensorSamples.clear()
         if(swapAudio==2) {
-            if(swapCount==0) { //time
+            if(swapCount==1) { //time
                 announceFinalTime(durationSec)
             }
-            if(swapCount==1) { //throws
+            if(swapCount==0) { //throws
                 announceFinalFlankCount(flankCount)
             }
         }
@@ -5926,6 +8624,30 @@ class MainActivity : ComponentActivity(),
         seriesStartTime = null
     }
 
+    private fun saveSelectedEntries(
+        selectedIndices: List<Int>,
+        note: String
+    ) {
+        if (selectedIndices.isNotEmpty()) {
+
+            val selectedRecords = selectedIndices
+                .sorted()
+                .map { index -> recordedRecords[index] }
+
+            saveHistoryItem(selectedRecords, note)
+
+            selectedIndices.sortedDescending().forEach { index ->
+                recordedRecords.removeAt(index)
+            }
+
+            saveRecordedRecords()
+        }
+        flankCount = 0
+        wasBelowZ = false
+        accelerometerReading = "T: $flankCount"
+        lastSensorUpdateTime = System.currentTimeMillis()
+        seriesStartTime = null
+    }
 
     private fun incrementLastRecord() {
         if (recordedRecords.isNotEmpty()) {
@@ -5944,7 +8666,7 @@ class MainActivity : ComponentActivity(),
             val idx = recordedRecords.lastIndex
             val old = recordedRecords[idx]
             if (old.count > 1) {
-                val newCount = old.count - 1
+                val newCount = old.count - throwMultiplier
                 val newFreq = if (old.durationSeconds > 0f) newCount / old.durationSeconds else 0f
                 recordedRecords[idx] = old.copy(count = newCount, frequency = newFreq)
                 saveRecordedRecords()
@@ -5981,10 +8703,14 @@ class MainActivity : ComponentActivity(),
     fun RecordedValuesList(
         recordedRecords: List<ThrowRecord>,
         swapCount: Int,
+        swapDisplay: Int,
+        swapGraph: Int,
         saveAll: Boolean,
         onSaveAllChange: (Boolean) -> Unit,
         showNoteDialog: Boolean,
-        onShowNoteDialogChange: (Boolean) -> Unit
+        onShowNoteDialogChange: (Boolean) -> Unit,
+        onIncrementLast: () -> Unit,
+        onDecrementLast: () -> Unit,
     ) {
         val reversedList = recordedRecords.reversed()
 
@@ -5996,7 +8722,396 @@ class MainActivity : ComponentActivity(),
                 .padding(vertical = 0.dp),
         )*/
 
-        Column(
+
+
+        /*Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween,
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(70.dp)
+                .padding(vertical = 0.dp,horizontal = 6.dp)
+                .clip(RoundedCornerShape(16.dp))
+                .background(color = Color.DarkGray),
+        ) {*/
+        if (swapDisplay==1){
+            Column(
+                modifier = Modifier
+                    .fillMaxHeight()
+                    .padding(start = 4.dp),
+                verticalArrangement = Arrangement.SpaceEvenly, // espaços iguais antes, entre e depois
+                horizontalAlignment = Alignment.CenterHorizontally // centraliza horizontalmente
+            ) {
+
+
+                Button(
+                    onClick = {
+
+                    },
+                    modifier = Modifier
+                        .size(18.dp)
+                        .align(alignment = Alignment.CenterHorizontally),
+                    shape = RectangleShape,
+                    colors = ButtonDefaults.buttonColors(
+                        backgroundColor = Color.Transparent
+                    ),
+                ) {
+                    Icon(
+                        painter = painterResource(id = R.drawable.wos_attempts),
+                        contentDescription = "Attempts",
+                        modifier = Modifier.fillMaxSize(),
+                        tint = MaterialTheme.colors.primary
+                    )
+                }
+
+                Button(
+                    onClick = {
+
+                    },
+                    modifier = Modifier
+                        .size(18.dp)
+                        .align(alignment = Alignment.CenterHorizontally),
+                    shape = RectangleShape,
+                    colors = ButtonDefaults.buttonColors(
+                        backgroundColor = Color.Transparent
+                    ),
+                ) {
+                    Icon(
+                        painter = painterResource(id = R.drawable.wos_histogram),
+                        contentDescription = "Attempts",
+                        modifier = Modifier.fillMaxSize(),
+                        tint = MaterialTheme.colors.primary
+                    )
+                }
+                Button(
+                    onClick = {
+
+                    },
+                    modifier = Modifier
+                        .size(18.dp)
+                        .align(alignment = Alignment.CenterHorizontally),
+                    shape = RectangleShape,
+                    colors = ButtonDefaults.buttonColors(
+                        backgroundColor = Color.Transparent
+                    ),
+                ) {
+                    Icon(
+                        painter = painterResource(id = R.drawable.wos_progress),
+                        contentDescription = "Attempts",
+                        modifier = Modifier.fillMaxSize(),
+                        tint = MaterialTheme.colors.primary
+                    )
+                }
+            }
+            Column(
+                modifier = Modifier.fillMaxWidth(0.85f),
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                if (reversedList.isNotEmpty()) {
+                    AttemptsBarChart(recordedRecords)
+                }
+            }
+            Column(
+                modifier = Modifier
+                    .fillMaxHeight()
+                    .padding(end = 4.dp),
+                verticalArrangement = Arrangement.SpaceEvenly, // espaços iguais antes, entre e depois
+                horizontalAlignment = Alignment.CenterHorizontally // centraliza horizontalmente
+            ) {
+                Button(
+                    onClick = onIncrementLast,
+                    modifier = Modifier
+                        .size(20.dp)
+                        .weight(0.5f),
+                    shape = CircleShape,
+                    enabled = !isScreenBlocked,
+                    colors = ButtonDefaults.buttonColors(backgroundColor = Color.Transparent)
+                ) {
+                    Text(text = "+", fontSize = 20.sp, color = MaterialTheme.colors.primary)
+                }
+                Button(
+                    onClick = onDecrementLast,
+                    modifier = Modifier
+                        .size(20.dp)
+                        .weight(0.5f),
+                    shape = CircleShape,
+                    enabled = !isScreenBlocked,
+                    colors = ButtonDefaults.buttonColors(backgroundColor = Color.Transparent)
+                ) {
+                    Text(text = "-", fontSize = 20.sp, color = MaterialTheme.colors.primary)
+                }
+                Button(
+                    onClick = { },
+                    modifier = Modifier
+                        .size(20.dp)
+                        .weight(0.5f),
+                    shape = CircleShape,
+                    enabled = !isScreenBlocked,
+                    colors = ButtonDefaults.buttonColors(backgroundColor = Color.Transparent)
+                ) {
+                    Text(text = "x", fontSize = 20.sp, color = MaterialTheme.colors.primary)
+                }
+            }
+        }
+
+        if (swapDisplay==0){
+            Column(
+                modifier = Modifier
+                    .fillMaxHeight()
+                    .padding(start = 4.dp),
+                verticalArrangement = Arrangement.SpaceEvenly, // espaços iguais antes, entre e depois
+                horizontalAlignment = Alignment.CenterHorizontally // centraliza horizontalmente
+            ) {
+
+
+                Button(
+                    onClick = {
+
+                    },
+                    modifier = Modifier
+                        .size(18.dp)
+                        .align(alignment = Alignment.CenterHorizontally),
+                    shape = RectangleShape,
+                    colors = ButtonDefaults.buttonColors(
+                        backgroundColor = Color.Transparent
+                    ),
+                ) {
+                    Icon(
+                        painter = painterResource(id = R.drawable.wos_attempts),
+                        contentDescription = "Attempts",
+                        modifier = Modifier.fillMaxSize(),
+                        tint = MaterialTheme.colors.primary
+                    )
+                }
+
+                Button(
+                    onClick = {
+
+                    },
+                    modifier = Modifier
+                        .size(18.dp)
+                        .align(alignment = Alignment.CenterHorizontally),
+                    shape = RectangleShape,
+                    colors = ButtonDefaults.buttonColors(
+                        backgroundColor = Color.Transparent
+                    ),
+                ) {
+                    Icon(
+                        painter = painterResource(id = R.drawable.wos_histogram),
+                        contentDescription = "Attempts",
+                        modifier = Modifier.fillMaxSize(),
+                        tint = MaterialTheme.colors.primary
+                    )
+                }
+                Button(
+                    onClick = {
+
+                    },
+                    modifier = Modifier
+                        .size(18.dp)
+                        .align(alignment = Alignment.CenterHorizontally),
+                    shape = RectangleShape,
+                    colors = ButtonDefaults.buttonColors(
+                        backgroundColor = Color.Transparent
+                    ),
+                ) {
+                    Icon(
+                        painter = painterResource(id = R.drawable.wos_progress),
+                        contentDescription = "Attempts",
+                        modifier = Modifier.fillMaxSize(),
+                        tint = MaterialTheme.colors.primary
+                    )
+                }
+            }
+
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth(0.8f)
+                    .verticalScroll(rememberScrollState()),
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                if (reversedList.isNotEmpty()) {
+                    Row(
+                        modifier = Modifier
+                            .padding(vertical = 0.dp)
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(50))
+                            .background(Color.DarkGray)
+                            .clickable {
+                                onSaveAllChange(false)
+                                onShowNoteDialogChange(true)
+                            },
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                    ) {
+                        Text(
+                            text = "${reversedList.size}",
+                            color = MaterialTheme.colors.primary,
+                            fontSize = 10.sp,
+                            modifier = Modifier.weight(1.3f),
+                            textAlign = TextAlign.Center,
+                            style = MaterialTheme.typography.body2.copy(fontSize = 10.sp, lineHeight = 12.sp),
+                        )
+                        Text(
+                            text = "${"%4d".format(reversedList[0].count)}t",
+                            color = MaterialTheme.colors.primary,
+                            fontSize = 10.sp,
+                            modifier = Modifier.weight(2f),
+                            textAlign = TextAlign.Left,
+                            style = MaterialTheme.typography.body2.copy(fontSize = 10.sp, lineHeight = 12.sp),
+                        )
+                        Text(
+                            text = if (reversedList[0].durationSeconds > 600) {
+                                reversedList[0].durationSeconds.toTimeString()
+                            } else {
+                                "%.1f".format(reversedList[0].durationSeconds) + "s"
+                            },
+                            color = MaterialTheme.colors.primary,
+                            fontSize = 10.sp,
+                            modifier = Modifier.weight(2f),
+                            textAlign = TextAlign.Center,
+                            style = MaterialTheme.typography.body2.copy(fontSize = 10.sp, lineHeight = 12.sp),
+                        )
+                        Text(
+                            text = buildAnnotatedString {
+                                append("%.1f".format(reversedList[0].frequency))
+                                withStyle(style = SpanStyle(fontSize = 6.sp)) {
+                                    append("tps")
+                                }
+                            },
+                            color = MaterialTheme.colors.primary,
+                            fontSize = 10.sp,
+                            modifier = Modifier.weight(2f),
+                            textAlign = TextAlign.Right,
+                            style = MaterialTheme.typography.body2.copy(fontSize = 10.sp, lineHeight = 12.sp),
+                        )
+
+                        Icon(
+                            painter = painterResource(id = R.drawable.save_arrow),
+                            contentDescription = "Save Run",
+                            modifier = Modifier
+                                .size(10.dp)
+                                .weight(1.3f),
+                            tint = MaterialTheme.colors.primary
+                        )
+
+                    }
+                }
+                reversedList.forEachIndexed { index, record ->
+                    Row(
+                        modifier = Modifier
+                            .padding(vertical = 0.dp)
+                            .fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                    ) {
+                        if (index>0) {
+                            Text(
+                                text = "${reversedList.size - index}",
+                                color = Color.White,
+                                fontSize = 10.sp,
+                                modifier = Modifier.weight(1.3f),
+                                textAlign = TextAlign.Center,
+                                style = MaterialTheme.typography.body2.copy(
+                                    fontSize = 10.sp,
+                                    lineHeight = 12.sp
+                                ),
+
+                                )
+                            //if (swapCount == 1) { //throws
+                            Text(
+                                text = "${"%4d".format(record.count)}t",
+                                color = Color.White,
+                                fontSize = 10.sp,
+                                modifier = Modifier.weight(2f),
+                                textAlign = TextAlign.Left,
+                                style = MaterialTheme.typography.body2.copy(
+                                    fontSize = 10.sp,
+                                    lineHeight = 12.sp
+                                ),
+                            )
+                            //}
+                            //if (swapCount == 0) { //time
+                            Text(
+                                text = if (record.durationSeconds > 600) {
+                                    record.durationSeconds.toTimeString()
+                                } else {
+                                    "%.1f".format(record.durationSeconds) + "s"
+                                },
+                                color     = Color.White,
+                                fontSize  = 10.sp,
+                                modifier  = Modifier.weight(2f),
+                                textAlign = TextAlign.Center,
+                                style     = MaterialTheme.typography.body2.copy(
+                                    fontSize    = 10.sp,
+                                    lineHeight  = 12.sp
+                                )
+                            )
+                            //}
+                            //if (swapCount == 2) { //tps
+                            Text(
+                                text = buildAnnotatedString {
+                                    append("%.1f".format(record.frequency))
+                                    withStyle(style = SpanStyle(fontSize = 6.sp)) {
+                                        append("tps")
+                                    }
+                                },
+                                color = Color.White,
+                                fontSize = 10.sp,
+                                modifier = Modifier.weight(2f),
+                                textAlign = TextAlign.Right,
+                                style = MaterialTheme.typography.body2.copy(
+                                    fontSize = 10.sp,
+                                    lineHeight = 12.sp
+                                ),
+                            )
+                            //}
+
+                            Text(
+                                text="",
+                                modifier= Modifier
+                                    .size(10.dp)
+                                    .weight(1.3f),
+                            )
+                        }
+                    }
+                }
+            }
+            Column(
+                modifier = Modifier
+                    .fillMaxHeight()
+                    .padding(end = 4.dp),
+                verticalArrangement = Arrangement.SpaceEvenly, // espaços iguais antes, entre e depois
+                horizontalAlignment = Alignment.CenterHorizontally // centraliza horizontalmente
+            ) {
+                Button(
+                    onClick = onIncrementLast,
+                    modifier = Modifier
+                        .size(20.dp)
+                        .weight(0.5f),
+                    shape = CircleShape,
+                    enabled = !isScreenBlocked,
+                    colors = ButtonDefaults.buttonColors(backgroundColor = Color.Transparent)
+                ) {
+                    Text(text = "+", fontSize = 20.sp, color = MaterialTheme.colors.primary)
+                }
+                Button(
+                    onClick = onDecrementLast,
+                    modifier = Modifier
+                        .size(20.dp)
+                        .weight(0.5f),
+                    shape = CircleShape,
+                    enabled = !isScreenBlocked,
+                    colors = ButtonDefaults.buttonColors(backgroundColor = Color.Transparent)
+                ) {
+                    Text(text = "-", fontSize = 20.sp, color = MaterialTheme.colors.primary)
+                }
+            }
+        }
+
+
+
+
+        //}
+        /*Column(
             modifier = Modifier
                 .fillMaxWidth()
                 .verticalScroll(rememberScrollState()),
@@ -6146,179 +9261,10 @@ class MainActivity : ComponentActivity(),
                     }
                 }
             }
-        }
+        }*/
     }
 
-    @Composable
-    fun StatisticsDisplay(recordedRecords: List<ThrowRecord>) {
 
-        val counts    = recordedRecords.map { it.count }.ifEmpty { listOf(0) }
-        val durations = recordedRecords.map { it.durationSeconds }.ifEmpty { listOf(0f) }
-        val tpsValues = recordedRecords.map { it.frequency }.ifEmpty { listOf(0f) }
-
-        // Contadores
-        val sumCount       = counts.sum()
-        val maxCount       = counts.maxOrNull()!!
-        val avgCount       = counts.average().toFloat()
-        val avgBestCount3  = counts.sortedDescending().take(3).average().toFloat()
-        val avgBestCount5  = counts.sortedDescending().take(5).average().toFloat()
-        val avgBestCount10 = counts.sortedDescending().take(10).average().toFloat()
-
-        // Durações
-        val sumDuration        = durations.sum()
-        val maxDuration        = durations.maxOrNull()!!
-        val avgDuration        = durations.average().toFloat()
-        val avgBestDuration3   = durations.sortedDescending().take(3).average().toFloat()
-        val avgBestDuration5   = durations.sortedDescending().take(5).average().toFloat()
-        val avgBestDuration10  = durations.sortedDescending().take(10).average().toFloat()
-
-        // TPS (throws per second)
-        val maxTps         = tpsValues.maxOrNull()!!
-        val avgTps         = tpsValues.average().toFloat()
-        val avgBestTps3    = tpsValues.sortedDescending().take(3).average().toFloat()
-        val avgBestTps5    = tpsValues.sortedDescending().take(5).average().toFloat()
-        val avgBestTps10   = tpsValues.sortedDescending().take(10).average().toFloat()
-
-        // Cria uma Row para exibir os outros valores, cada um centralizado
-        Row(
-            modifier = Modifier
-                .padding(horizontal = 0.dp, vertical = 2.dp),
-            horizontalArrangement = Arrangement.SpaceBetween,
-        ) {
-            if(swapCount==1) {
-                Text(
-                    text = "total\n${sumCount}",
-                    color = Color.White,
-                    modifier = Modifier.weight(0.8f),
-                    style = MaterialTheme.typography.body2.copy(fontSize = 10.sp, lineHeight = 12.sp),
-                    textAlign = TextAlign.Center
-                )
-                Text(
-                    text = "max\n${maxCount}",
-                    color = Color.White,
-                    modifier = Modifier.weight(0.8f),
-                    style = MaterialTheme.typography.body2.copy(fontSize = 10.sp, lineHeight = 12.sp),
-                    textAlign = TextAlign.Center
-                )
-                /*Text(
-                    text = "b03\n${"%.1f".format(avgBestCount3)}",
-                    color = Color.White,
-                    modifier = Modifier.weight(0.8f),
-                    style = MaterialTheme.typography.body2.copy(fontSize = 10.sp, lineHeight = 12.sp),
-                    textAlign = TextAlign.Center
-                )*/
-                Text(
-                    text = "b05\n${"%.1f".format(avgBestCount5)}",
-                    color = Color.White,
-                    modifier = Modifier.weight(0.8f),
-                    style = MaterialTheme.typography.body2.copy(fontSize = 10.sp, lineHeight = 12.sp),
-                    textAlign = TextAlign.Center
-                )
-                Text(
-                    text = "b10\n${"%.1f".format(avgBestCount10)}",
-                    color = Color.White,
-                    modifier = Modifier.weight(0.8f),
-                    style = MaterialTheme.typography.body2.copy(fontSize = 10.sp, lineHeight = 12.sp),
-                    textAlign = TextAlign.Center
-                )
-                Text(
-                    text = "avg\n${"%.1f".format(avgCount)}",
-                    color = Color.White,
-                    modifier = Modifier.weight(0.8f),
-                    style = MaterialTheme.typography.body2.copy(fontSize = 10.sp, lineHeight = 12.sp),
-                    textAlign = TextAlign.Center
-                )
-            }
-            if(swapCount==0) {
-                Text(
-                    text = "total\n${"%.1f".format(sumDuration)}",
-                    color = Color.White,
-                    modifier = Modifier.weight(0.8f),
-                    style = MaterialTheme.typography.body2.copy(fontSize = 10.sp, lineHeight = 12.sp),
-                    textAlign = TextAlign.Center
-                )
-                Text(
-                    text = "max\n${"%.1f".format(maxDuration)}",
-                    color = Color.White,
-                    modifier = Modifier.weight(0.8f),
-                    style = MaterialTheme.typography.body2.copy(fontSize = 10.sp, lineHeight = 12.sp),
-                    textAlign = TextAlign.Center
-                )
-                /*Text(
-                    text = "b03\n${"%.1f".format(avgBestDuration3)}",
-                    color = Color.White,
-                    modifier = Modifier.weight(0.8f),
-                    style = MaterialTheme.typography.body2.copy(fontSize = 10.sp, lineHeight = 12.sp),
-                    textAlign = TextAlign.Center
-                )*/
-                Text(
-                    text = "b05\n${"%.1f".format(avgBestDuration5)}",
-                    color = Color.White,
-                    modifier = Modifier.weight(0.8f),
-                    style = MaterialTheme.typography.body2.copy(fontSize = 10.sp, lineHeight = 12.sp),
-                    textAlign = TextAlign.Center
-                )
-                Text(
-                    text = "b10\n${"%.1f".format(avgBestDuration10)}",
-                    color = Color.White,
-                    modifier = Modifier.weight(0.8f),
-                    style = MaterialTheme.typography.body2.copy(fontSize = 10.sp, lineHeight = 12.sp),
-                    textAlign = TextAlign.Center
-                )
-                Text(
-                    text = "avg\n${"%.1f".format(avgDuration)}",
-                    color = Color.White,
-                    modifier = Modifier.weight(0.8f),
-                    style = MaterialTheme.typography.body2.copy(fontSize = 10.sp, lineHeight = 12.sp),
-                    textAlign = TextAlign.Center
-                )
-            }
-            if(swapCount==2) {
-                Text(
-                    text = "avg\n${"%.1f".format(avgTps)}",
-                    color = Color.White,
-                    modifier = Modifier.weight(0.8f),
-                    style = MaterialTheme.typography.body2.copy(fontSize = 10.sp, lineHeight = 12.sp),
-                    textAlign = TextAlign.Center
-                )
-                Text(
-                    text = "max\n${"%.1f".format(maxTps)}",
-                    color = Color.White,
-                    modifier = Modifier.weight(0.8f),
-                    style = MaterialTheme.typography.body2.copy(fontSize = 10.sp, lineHeight = 12.sp),
-                    textAlign = TextAlign.Center
-                )
-                /*Text(
-                    text = "b03\n${"%.1f".format(avgBestTps3)}",
-                    color = Color.White,
-                    modifier = Modifier.weight(0.8f),
-                    style = MaterialTheme.typography.body2.copy(fontSize = 10.sp, lineHeight = 12.sp),
-                    textAlign = TextAlign.Center
-                )*/
-                Text(
-                    text = "b05\n${"%.1f".format(avgBestTps5)}",
-                    color = Color.White,
-                    modifier = Modifier.weight(0.8f),
-                    style = MaterialTheme.typography.body2.copy(fontSize = 10.sp, lineHeight = 12.sp),
-                    textAlign = TextAlign.Center
-                )
-                Text(
-                    text = "b10\n${"%.1f".format(avgBestTps10)}",
-                    color = Color.White,
-                    modifier = Modifier.weight(0.8f),
-                    style = MaterialTheme.typography.body2.copy(fontSize = 10.sp, lineHeight = 12.sp),
-                    textAlign = TextAlign.Center
-                )
-                Text(
-                    text = "avg\n${"%.1f".format(avgTps)}",
-                    color = Color.White,
-                    modifier = Modifier.weight(0.8f),
-                    style = MaterialTheme.typography.body2.copy(fontSize = 10.sp, lineHeight = 12.sp),
-                    textAlign = TextAlign.Center
-                )
-            }
-        }
-    }
 
 
     private fun loadDefaultHistoryJson(): String {

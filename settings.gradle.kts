@@ -23,4 +23,3 @@ dependencyResolutionManagement {
 rootProject.name = "jugglerPal"
 include(":mobile")
 include(":wear")
- 
